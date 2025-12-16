@@ -66,7 +66,9 @@ func NewTimestampEncoder(config TimestampConfig) *DefaultTimestampEncoder {
 
 // Encode 编码时间戳
 func (e *DefaultTimestampEncoder) Encode(ts int64) string {
-	if ts == 0 {
+	// 对于 days_mode，时间戳 0 需要正常编码，不能直接返回 "0"
+	// 因为 "0" 在 days_mode 中表示 baseline
+	if ts == 0 && !e.config.UseDays {
 		return "0"
 	}
 
@@ -84,6 +86,10 @@ func (e *DefaultTimestampEncoder) Encode(ts int64) string {
 // Decode 解码时间戳
 func (e *DefaultTimestampEncoder) Decode(s string) (int64, error) {
 	if s == "0" {
+		// 如果使用天数模式，返回baseline；否则返回0
+		if e.config.UseDays {
+			return e.config.Baseline, nil
+		}
 		return 0, nil
 	}
 
@@ -100,6 +106,17 @@ func (e *DefaultTimestampEncoder) Decode(s string) (int64, error) {
 
 // encodeWithDays 使用天数编码
 func (e *DefaultTimestampEncoder) encodeWithDays(ts int64) string {
+	// 特殊处理：时间戳 0 需要正常编码，不能返回 "0"
+	// 因为 "0" 在解码时表示 baseline
+	if ts == 0 {
+		diff := 0 - e.config.Baseline
+		days := diff / SecondsPerDay
+		seconds := diff % SecondsPerDay
+		daysStr := ToBase64(days)
+		secondsStr := ToBase64(seconds)
+		return daysStr + "." + secondsStr
+	}
+
 	diff := ts - e.config.Baseline
 	days := diff / SecondsPerDay
 	seconds := diff % SecondsPerDay
@@ -140,34 +157,39 @@ func (e *DefaultTimestampEncoder) encodeCompact(ts int64) string {
 
 	// 年份偏移（BaseYear基准）
 	yearOffset := t.Year() - BaseYear
+	// 允许年份偏移 0-100（2000-2100年）
 	if yearOffset < 0 || yearOffset > 100 {
 		return ToBase64(ts)
 	}
 
-	// 年月日时分组合
+	// 年月日时分秒组合
 	dayOfYear := getDayOfYear(t)
-	timeCode := t.Hour()*60 + t.Minute()
+	// timeCode: 小时*3600 + 分钟*60 + 秒，最大值为 23*3600 + 59*60 + 59 = 86399
+	timeCode := t.Hour()*3600 + t.Minute()*60 + t.Second()
 
 	// 使用62进制编码
 	yearStr := encodeWithFixedWidth(int64(yearOffset), Base62Base)
 	dayStr := encodeWithFixedWidth(int64(dayOfYear), UnitDay)
-	timeStr := encodeWithFixedWidth(int64(timeCode), UnitDay)
+	// timeCode 最大为 86399，需要3个字符才能表示（62^2 = 3844 < 86399 < 62^3 = 238328）
+	timeStr := encodeWithVariableWidth(int64(timeCode), 86400) // 86400 = 24*60*60，一天的秒数
 
 	return yearStr + dayStr + timeStr
 }
 
 // decodeCompact 解码紧凑编码
 func (e *DefaultTimestampEncoder) decodeCompact(s string) (int64, error) {
-	if len(s) < 6 {
-		return 0, fmt.Errorf("invalid compact format")
+	// 格式：2字符年份 + 2字符天数 + 3字符时间（包含秒数）= 7字符
+	if len(s) < 7 {
+		return 0, fmt.Errorf("invalid compact format: expected 7 characters, got %d", len(s))
 	}
 
 	// 解析各部分
 	yearPart := s[:2]
 	dayPart := s[2:4]
-	timePart := s[4:6]
+	timePart := s[4:7] // 3个字符表示时间（包含秒数）
 
-	yearOffset, err := decodeWithFixedWidth(yearPart, Base62Base)
+	// 年份偏移范围是 0-100，所以 max 应该是 101
+	yearOffset, err := decodeWithFixedWidth(yearPart, 101)
 	if err != nil {
 		return 0, err
 	}
@@ -177,7 +199,7 @@ func (e *DefaultTimestampEncoder) decodeCompact(s string) (int64, error) {
 		return 0, err
 	}
 
-	timeCode, err := decodeWithFixedWidth(timePart, UnitDay)
+	timeCode, err := decodeWithVariableWidth(timePart, 86400)
 	if err != nil {
 		return 0, err
 	}
@@ -186,7 +208,7 @@ func (e *DefaultTimestampEncoder) decodeCompact(s string) (int64, error) {
 	year := BaseYear + int(yearOffset)
 	date := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
 	date = date.AddDate(0, 0, int(dayOfYear)-1)
-	date = date.Add(time.Duration(timeCode) * time.Minute)
+	date = date.Add(time.Duration(timeCode) * time.Second) // 使用秒数而不是分钟
 
 	return date.Unix(), nil
 }
@@ -443,6 +465,69 @@ func decodeWithFixedWidth(s string, max int64) (int64, error) {
 
 	if result >= max {
 		return 0, fmt.Errorf("value out of range: %d", result)
+	}
+
+	return result, nil
+}
+
+// encodeWithVariableWidth 可变宽度编码（最多3个字符）
+func encodeWithVariableWidth(num, max int64) string {
+	if num == 0 {
+		return "000"
+	}
+
+	base := int64(len(base62Chars))
+	
+	// 计算需要的宽度：1个字符可表示62，2个字符可表示3844，3个字符可表示238328
+	var width int
+	if num < base {
+		width = 1
+	} else if num < base*base {
+		width = 2
+	} else {
+		width = 3
+	}
+
+	var result []byte
+	temp := num
+	for i := 0; i < width; i++ {
+		remainder := temp % base
+		result = append([]byte{base62Chars[remainder]}, result...)
+		temp = temp / base
+	}
+
+	// 左侧补零到指定宽度
+	for len(result) < width {
+		result = append([]byte{base62Chars[0]}, result...)
+	}
+
+	return string(result)
+}
+
+// decodeWithVariableWidth 解码可变宽度（1-3个字符）
+func decodeWithVariableWidth(s string, max int64) (int64, error) {
+	if len(s) == 0 || len(s) > 3 {
+		return 0, fmt.Errorf("invalid width: %s (expected 1-3 characters)", s)
+	}
+
+	charToIndex := make(map[byte]int64)
+	for i, c := range base62Chars {
+		charToIndex[byte(c)] = int64(i)
+	}
+
+	base := int64(len(base62Chars))
+	var result int64
+
+	for _, char := range s {
+		if idx, ok := charToIndex[byte(char)]; ok {
+			result = result*base + idx
+		} else {
+			return 0, fmt.Errorf("invalid character: %c", char)
+		}
+	}
+
+	if result >= max {
+		return 0, fmt.Errorf("value out of range: %d (max: %d)", result, max)
 	}
 
 	return result, nil

@@ -242,8 +242,11 @@ func GenerateShareCode(business BusinessType, expireIn time.Duration, data int64
 
 // GenerateInviteCode 生成邀请码
 func GenerateInviteCode(userID int64) string {
-	// 取用户ID的后缀位进行编码，保持简短
-	suffix := userID % InviteCodeSuffixLength
+	// 取用户ID的后缀位进行编码，保持简短（总长度2个字符：B + 1个字符）
+	// Base62编码：1个字符可表示0-61
+	// 限制范围为62，确保编码后只有1个字符
+	maxSuffixValue := int64(62) // 62^1 = 62，确保编码后只有1个字符
+	suffix := userID % maxSuffixValue
 	return fmt.Sprintf("%c%s", BusinessInvite, ToBase64(suffix))
 }
 
