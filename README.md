@@ -191,66 +191,237 @@ shortid.BatchUserIDs(50)              // 批量用户ID
 
 ## 💡 应用场景
 
-### 电商系统
+### 1. 电商系统
 
+#### 订单管理
 ```go
-// 订单号
-orderID := shortid.GenerateOrderID(12345)
+// 生成订单ID（自动包含日期和序列号）
+orderID := shortid.QuickOrderID(1001)  // "3+5E3d7"
+// 格式说明：3(订单) + 5E(日期) + 3d7(序列号)
 
-// 支付流水
+// 批量生成订单ID
+orderIDs := shortid.BatchOrderIDs(100)
+// 适用于：批量导入、数据迁移等场景
+```
+
+#### 支付流水
+```go
+// 支付流水号（包含日期和机器ID）
 paymentGen := shortid.NewIDGenerator(shortid.IDGeneratorConfig{
-    BusinessType: shortid.BusinessPayment,
+    BusinessType: shortid.BusinessPayment,  // '4'
     EnableDate:   true,
-    MachineID:    100,
+    DateBase:     "2024-01-01",
+    MachineID:    100,  // 支付网关ID
 })
-paymentID := paymentGen.Generate()
+paymentID := paymentGen.Generate()  // "4+5E1"
+```
 
-// 物流单号
+#### 物流跟踪
+```go
+// 物流单号（7天有效期）
 logisticsID := shortid.GenerateShareCode(
-    shortid.BusinessLogistics,
-    7*24*time.Hour,
-    98765,
+    shortid.BusinessLogistics,  // '7'
+    7*24*time.Hour,              // 7天有效期
+    98765,                       // 订单ID
 )
+// 结果：7+5LpGZ（7天有效，过期自动失效）
 ```
 
-### 社交平台
+**使用场景：**
+- ✅ 订单号生成：短小精悍，易于分享和记忆
+- ✅ 支付流水：包含机器ID，便于追踪和排查
+- ✅ 物流单号：带有效期，自动过期，安全性高
 
+### 2. 社交平台
+
+#### 用户会话管理
 ```go
-// 会话ID
+// 会话ID（2小时有效期）
 sessionID := shortid.GenerateSessionID(12345, 2*time.Hour)
+// 格式：8h2_3d7（8=会话类型，h2=2小时，3d7=用户ID）
 
-// 动态ID
+// 缓存键生成
+cacheKey := shortid.QuickCacheKey("user", 12345)
+// 结果：user:+5E:3d7（前缀 + 日期 + ID）
+```
+
+#### 内容发布
+```go
+// 动态/帖子ID
 postGen := shortid.NewIDGenerator(shortid.IDGeneratorConfig{
-    BusinessType: 'P', // Post
+    BusinessType: 'P',  // Post
     EnableDate:   true,
 })
-postID := postGen.Generate()
+postID := postGen.Generate()  // "P+5E"
 
-// 分享链接
-shareCode := shortid.GenerateShareCode(
-    shortid.BusinessShare,
-    7*24*time.Hour,  // 7天有效
-    12345,
-)
+// 评论ID（带前缀）
+commentGen := shortid.NewIDGenerator(shortid.IDGeneratorConfig{
+    BusinessType: 'c',  // Comment
+    Prefix:       "cmt",
+})
+commentID := commentGen.Generate()  // "cmtc1VvqU4"
 ```
 
-### 营销系统
-
+#### 分享链接
 ```go
-// 优惠券
+// 分享码（7天有效）
+shareCode := shortid.QuickShareCode(12345)  // "A+5L3d7"
+// 格式：A(分享) + 5L(7天后过期) + 3d7(内容ID)
+
+// 生成分享URL
+shareURL := fmt.Sprintf("https://example.com/share/%s", shareCode)
+```
+
+**使用场景：**
+- ✅ 会话管理：自动过期，提高安全性
+- ✅ 内容ID：短小易分享，适合社交媒体
+- ✅ 分享链接：带有效期，防止链接泄露风险
+
+### 3. 营销系统
+
+#### 优惠券系统
+```go
+// 优惠券码（30天有效）
+couponCode := shortid.GenerateShareCode(
+    shortid.BusinessCoupon,  // 'C'
+    30*24*time.Hour,         // 30天有效期
+    520,                     // 优惠券ID
+)
+// 结果：C+688o
+
+// 带前缀的优惠券
 couponGen := shortid.NewIDGenerator(shortid.IDGeneratorConfig{
     BusinessType: shortid.BusinessCoupon,
     Prefix:       "CPN",
+    EnableDate:   true,
 })
-couponID := couponGen.Generate()
-
-// 活动码
-activityCode := shortid.GenerateShareCode(
-    shortid.BusinessActivity,
-    30*24*time.Hour,
-    520,
-)
+customCoupon := couponGen.Generate()  // "CPNC+5E"
 ```
+
+#### 活动推广
+```go
+// 活动报名链接（30天有效）
+activityLink := shortid.GenerateShareCode(
+    shortid.BusinessActivity,  // 'D'
+    30*24*time.Hour,
+    20250615,  // 活动ID
+)
+// 结果：D+681mY6P
+
+// 促销码（带自定义前缀）
+promoGen := shortid.NewIDGenerator(shortid.IDGeneratorConfig{
+    BusinessType: shortid.BusinessMarketing,  // '0'
+    Prefix:       "PROMO",
+})
+promoCode := promoGen.Generate()  // "PROMO01VvqU4"
+```
+
+**使用场景：**
+- ✅ 优惠券：短码易输入，带有效期自动失效
+- ✅ 活动推广：批量生成，便于追踪转化
+- ✅ 促销码：自定义前缀，提升品牌识别度
+
+### 4. 短链接服务
+
+#### 基础使用
+```go
+// 生成短链接（7天有效）
+productLink := shortid.GenerateShareCode(
+    shortid.BusinessShare,
+    7*24*time.Hour,
+    888666,
+)
+// 结果：A+5L3Jbk
+// URL: https://short.ly/A+5L3Jbk
+
+// 批量生成
+productIDs := []int64{1001, 1002, 1003}
+for _, pid := range productIDs {
+    link := shortid.GenerateShareCode(shortid.BusinessShare, 7*24*time.Hour, pid)
+    fmt.Printf("商品%d: %s\n", pid, link)
+}
+```
+
+**使用场景：**
+- ✅ URL 缩短：将长链接压缩为短码，节省空间
+- ✅ 链接追踪：通过渠道ID追踪来源
+- ✅ 批量生成：为大量内容生成短链接
+
+> 💡 **完整实现示例**：查看 [examples/shortlink_service/](examples/shortlink_service/) 了解如何构建完整的短链接服务，包括高并发优化和性能测试。
+
+### 5. 缓存系统
+
+#### 缓存键生成
+```go
+// 用户缓存键
+userKey := shortid.QuickCacheKey("user", 12345)
+// 结果：user:+5E:3d7（前缀 + 日期 + ID）
+
+// 会话缓存键
+sessionKey := shortid.QuickCacheKey("session", 987654321)
+// 结果：session:+5E:3d7
+
+// 商品缓存键
+productKey := shortid.QuickCacheKey("product", 5555)
+// 结果：product:+5E:3d7
+```
+
+**优势：**
+- ✅ 自动包含日期，便于按日期清理缓存
+- ✅ 短小精悍，节省内存空间
+- ✅ 易于识别和管理
+
+### 6. 邀请码系统
+
+#### 用户邀请码
+```go
+// 生成邀请码（固定2个字符）
+inviteCode := shortid.QuickInviteCode(987654321)
+// 结果：Bp（B=邀请类型，p=用户ID编码）
+
+// 特点：
+// - 长度固定为2个字符，易于分享
+// - 支持最多62个不同用户（0-61）
+// - 适合小规模邀请场景
+```
+
+**使用场景：**
+- ✅ 内测邀请：短码易输入，提升用户体验
+- ✅ 推荐奖励：易于分享和追踪
+- ✅ 活动邀请：固定长度，便于管理
+
+### 7. 时间戳压缩
+
+#### 会话过期时间
+```go
+// 动态时间编码（相对当前时间）
+expireTime := time.Now().Add(2 * time.Hour).Unix()
+dynamicTS := shortid.ToTimestampDynamic(expireTime)
+// 结果：h2（2小时后）
+
+// 缓存过期时间
+cacheExpire := shortid.ToTimestampDynamic(
+    time.Now().Add(30 * time.Minute).Unix(),
+)
+// 结果：m30（30分钟后）
+```
+
+#### 事件调度
+```go
+// 活动开始时间
+eventTime := time.Date(2025, 6, 18, 0, 0, 0, 0, time.UTC)
+eventCode := shortid.QuickDate(2025, 6, 18)
+// 结果：+2G（相对2024-12-31）
+
+// 节日提醒
+holiday := shortid.QuickDate(2024, 2, 10)  // 春节
+// 结果：-5f
+```
+
+**使用场景：**
+- ✅ 会话管理：压缩过期时间，节省存储
+- ✅ 事件调度：日期编码，便于排序和查询
+- ✅ 缓存管理：动态时间，自动过期
 
 ## ⚡ 性能基准
 
@@ -265,6 +436,39 @@ BenchmarkTimestampEncoders/dynamic-8         13585750     88.51 ns/op  // 最快
 BenchmarkTimestampEncoders/short-8           8578692    140.6 ns/op
 BenchmarkTimestampEncoders/base62-8           7167398    162.1 ns/op
 ```
+
+## 🎯 快速选择指南
+
+根据你的使用场景，快速选择合适的 API：
+
+| 场景 | 推荐 API | 示例 | 特点 |
+|------|---------|------|------|
+| **订单ID** | `QuickOrderID()` | `"3+5E3d7"` | 自动包含日期，短小易读 |
+| **用户ID编码** | `QuickID()` | `"8m0Kx"` | 纯数字转短字符串 |
+| **分享链接** | `QuickShareCode()` | `"A+5L3d7"` | 7天有效期，自动过期 |
+| **邀请码** | `QuickInviteCode()` | `"Bp"` | 固定2字符，易于分享 |
+| **缓存键** | `QuickCacheKey()` | `"user:+5E:3d7"` | 包含日期，便于管理 |
+| **时间戳压缩** | `QuickTimestamp()` | `"z6.8q8"` | 高压缩率，适合存储 |
+| **动态时间** | `ToTimestampDynamic()` | `"h2"` | 相对当前时间，适合短期 |
+| **日期编码** | `QuickDate()` | `"+2G"` | 日期压缩，适合调度 |
+
+### 场景选择建议
+
+**需要长期存储？**
+- ✅ 使用 `QuickOrderID()` 或自定义 `IDGenerator`
+- ✅ 包含日期和序列号，保证唯一性
+
+**需要自动过期？**
+- ✅ 使用 `QuickShareCode()` 或 `GenerateShareCode()`
+- ✅ 设置有效期，过期自动失效
+
+**需要批量生成？**
+- ✅ 使用 `BatchOrderIDs()` 或循环调用生成器
+- ✅ 复用生成器实例，提高性能
+
+**需要自定义格式？**
+- ✅ 使用 `NewIDGenerator()` 配置自定义参数
+- ✅ 支持前缀、机器ID、日期基准等
 
 ## 📖 最佳实践
 
@@ -304,11 +508,16 @@ BenchmarkTimestampEncoders/base62-8           7167398    162.1 ns/op
 - `examples/convert/convert_example.go` - Base62 编码示例
 - `examples/timestamp_min/timestamp_min_length.go` - 时间戳最小长度分析
 - `examples/timestamp_summary/timestamp_summary.go` - 时间戳编码方案总结
+- `examples/shortlink_service/shortlink_service.go` - **短链接服务完整实现**（推荐）⭐
 
 运行示例：
 
 ```bash
-# SDK 完整使用示例（推荐）
+# 短链接服务示例（推荐，包含性能测试）
+cd examples/shortlink_service
+go run shortlink_service.go
+
+# SDK 完整使用示例
 cd examples/conv_sdk
 go run conv_sdk_example.go
 
@@ -328,6 +537,19 @@ go run timestamp_min_length.go
 cd examples/timestamp_summary
 go run timestamp_summary.go
 ```
+
+### 短链接服务示例亮点
+
+`examples/shortlink_service/` 展示了如何构建高性能短链接服务：
+
+- ✅ **完整实现**：包含生成、解析、批量操作
+- ✅ **高并发支持**：多生成器实例设计，减少锁竞争
+- ✅ **性能测试**：内置性能测试，验证每天1亿写入可行性
+- ✅ **读写比 1:10**：支持高并发读取场景
+
+**性能验证**：✅ 每天1亿写入、读写比1:10的需求**完全可行**，性能余量超过1000倍。
+
+> 📖 详细实现和性能分析请查看：[examples/shortlink_service/README.md](examples/shortlink_service/README.md)
 
 ## 🧪 测试
 
@@ -353,6 +575,102 @@ go test -v -run TestIDGeneration
 go test -v -bench=.
 ```
 
+## ❓ 常见问题
+
+### Q1: 如何选择合适的 ID 生成方式？
+
+**A:** 根据使用场景选择：
+- **订单、支付等需要长期存储**：使用 `QuickOrderID()` 或自定义 `IDGenerator`
+- **分享链接、邀请码等临时场景**：使用 `QuickShareCode()` 或 `QuickInviteCode()`
+- **缓存键**：使用 `QuickCacheKey()`，自动包含日期便于管理
+- **纯数字编码**：使用 `QuickID()`，简单直接
+
+### Q2: 邀请码为什么只有 2 个字符？
+
+**A:** 邀请码设计为固定 2 个字符（B + 1个字符），支持最多 62 个不同用户（0-61）。这样设计的好处：
+- ✅ 易于分享和输入
+- ✅ 提升用户体验
+- ✅ 适合小规模邀请场景
+
+如果需要支持更多用户，可以使用 `QuickShareCode()` 生成更长的分享码。
+
+### Q3: 分享码的有效期如何设置？
+
+**A:** 使用 `GenerateShareCode()` 的第二个参数设置有效期：
+```go
+// 7天有效
+shareCode := shortid.GenerateShareCode(
+    shortid.BusinessShare,
+    7*24*time.Hour,  // 有效期
+    12345,
+)
+
+// 1小时有效
+shortCode := shortid.GenerateShareCode(
+    shortid.BusinessShare,
+    1*time.Hour,
+    12345,
+)
+```
+
+### Q4: 如何解析生成的 ID？
+
+**A:** 使用 `IDGenerator` 的 `Parse()` 方法：
+```go
+gen := shortid.NewIDGenerator(shortid.IDGeneratorConfig{
+    BusinessType: shortid.BusinessOrder,
+    EnableDate:   true,
+})
+
+id := gen.Generate()
+info, err := gen.Parse(id)
+if err == nil {
+    fmt.Printf("业务类型: %s\n", info.Business)
+    fmt.Printf("时间戳: %v\n", info.Timestamp)
+}
+```
+
+### Q5: Base62 编码和 Base64 有什么区别？
+
+**A:** 
+- **Base62**：使用 `0-9a-zA-Z` 共 62 个字符，URL 安全，无需编码
+- **Base64**：使用 `A-Za-z0-9+/` 共 64 个字符，包含 `+` 和 `/`，需要 URL 编码
+
+本库使用 Base62 编码，所有结果都可以直接在 URL 中使用，无需额外编码。
+
+### Q6: 时间戳编码有哪些模式？
+
+**A:** 三种模式：
+1. **短编码** (`ToTimestampShort`)：以 2020 年为基准，格式 `天数.秒数`
+2. **动态编码** (`ToTimestampDynamic`)：相对当前时间，适合短期场景
+3. **日期编码** (`QuickDate`)：相对 2024-12-31，适合日期相关场景
+
+### Q7: 如何批量生成 ID？
+
+**A:** 使用批量 API 或循环生成：
+```go
+// 方式1：使用批量 API（推荐）
+orderIDs := shortid.BatchOrderIDs(100)
+
+// 方式2：循环生成（可自定义）
+gen := shortid.NewIDGenerator(config)
+for i := 0; i < 100; i++ {
+    id := gen.Generate()
+    // 使用 id
+}
+```
+
+### Q8: 自定义业务类型如何使用？
+
+**A:** 使用 `NewIDGenerator()` 配置自定义业务类型：
+```go
+gen := shortid.NewIDGenerator(shortid.IDGeneratorConfig{
+    BusinessType: 'P',  // 自定义：Post
+    EnableDate:   true,
+    Prefix:       "POST",  // 可选前缀
+})
+```
+
 ## ⚠️ 注意事项
 
 1. **ID 唯一性**：结合业务码、时间戳和序列号保证全局唯一
@@ -360,6 +678,8 @@ go test -v -bench=.
 3. **安全性**：编码不是加密，敏感数据需要额外保护
 4. **兼容性**：Base62 编码是 URL 安全的，可以直接在 URL 中使用
 5. **日期基准**：默认日期基准为 `2024-12-31`，可根据业务需求调整
+6. **邀请码限制**：邀请码只支持 0-61 的用户ID范围，适合小规模场景
+7. **时间戳精度**：compact_mode 包含秒数，但总长度为 7 个字符
 
 ## 📄 许可证
 

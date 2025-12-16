@@ -3,8 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
-	"github.com/gostool/shortid"
 	"time"
+
+	"github.com/gostool/shortid"
 )
 
 func main() {
@@ -256,4 +257,3 @@ func parseShareCode(code string) (*ShareCodeInfo, error) {
 
 	return info, nil
 }
-
