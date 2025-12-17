@@ -12,11 +12,12 @@ import (
 
 // 测试用例结构
 type testCase struct {
-	name     string
-	input    int64
-	expected string
-	baseline int64 // 可选基准时间
-	now      int64 // 用于动态编码的当前时间
+	name        string
+	input       int64
+	expected    string
+	expectedLen int   // 期望的编码长度
+	baseline    int64 // 可选基准时间
+	now         int64 // 用于动态编码的当前时间
 }
 
 // 编解码测试用例结构
@@ -44,34 +45,40 @@ type errorTestCase struct {
 func TestToTimestampShort(t *testing.T) {
 	tests := []testCase{
 		{
-			name:     "基准时间",
-			input:    1704067200, // 2024-01-01 00:00:00 UTC
-			expected: "0",
+			name:        "基准时间",
+			input:       1704067200, // 2024-01-01 00:00:00 UTC
+			expected:    "0000",     // 天数"0" + 秒数"000"（固定4字符）
+			expectedLen: 4,
 		},
 		{
-			name:     "基准时间+1天",
-			input:    1704067200 + 86400,
-			expected: "1000", // 天数"1" + 秒数"000"
+			name:        "基准时间+1天",
+			input:       1704067200 + 86400,
+			expected:    "1000", // 天数"1" + 秒数"000"
+			expectedLen: 4,
 		},
 		{
-			name:     "基准时间+166天",
-			input:    1704067200 + 166*86400,
-			expected: "2G000", // Base62(166) = "2G" + 秒数"000"
+			name:        "基准时间+166天",
+			input:       1704067200 + 166*86400,
+			expected:    "2G000", // Base62(166) = "2G" + 秒数"000"
+			expectedLen: 5,
 		},
 		{
-			name:     "基准时间+365天",
-			input:    1704067200 + 365*86400,
-			expected: "5T000", // Base62(365) = "5T" + 秒数"000"
+			name:        "基准时间+365天",
+			input:       1704067200 + 365*86400,
+			expected:    "5T000", // Base62(365) = "5T" + 秒数"000"
+			expectedLen: 5,
 		},
 		{
-			name:     "基准时间+1天+3600秒",
-			input:    1704067200 + 86400 + 3600,
-			expected: "10W4", // 天数"1" + 秒数"0W4"（3600秒的Base62编码，固定3字符）
+			name:        "基准时间+1天+3600秒",
+			input:       1704067200 + 86400 + 3600,
+			expected:    "10W4", // 编码格式："10W4" = 天数"1" + 秒数"0W4"（从末尾取3字符作为秒数部分）
+			expectedLen: 4,      // 天数1字符 + 秒数3字符 = 4字符
 		},
 		{
-			name:     "时间戳0",
-			input:    0,
-			expected: "0",
+			name:        "时间戳0",
+			input:       0,
+			expected:    "0",
+			expectedLen: 1, // 特殊值，长度为1
 		},
 	}
 
@@ -80,6 +87,9 @@ func TestToTimestampShort(t *testing.T) {
 			got := ToTimestampShort(tt.input)
 			if got != tt.expected {
 				t.Errorf("ToTimestampShort(%d) = %v, want %v", tt.input, got, tt.expected)
+			}
+			if tt.expectedLen > 0 && len(got) != tt.expectedLen {
+				t.Errorf("ToTimestampShort(%d) length = %d, want %d", tt.input, len(got), tt.expectedLen)
 			}
 		})
 	}
@@ -92,7 +102,7 @@ func TestToTimestampShortWithBaseline(t *testing.T) {
 			name:     "自定义基准时间",
 			input:    baseline,
 			baseline: baseline,
-			expected: "0",
+			expected: "0000", // 天数"0" + 秒数"000"（固定4字符）
 		},
 		{
 			name:     "自定义基准时间+1天",
@@ -109,6 +119,10 @@ func TestToTimestampShortWithBaseline(t *testing.T) {
 				t.Errorf("ToTimestampShortWithBaseline(%d, %d) = %v, want %v",
 					tt.input, tt.baseline, got, tt.expected)
 			}
+			if tt.expectedLen > 0 && len(got) != tt.expectedLen {
+				t.Errorf("ToTimestampShortWithBaseline(%d, %d) length = %d, want %d",
+					tt.input, tt.baseline, len(got), tt.expectedLen)
+			}
 		})
 	}
 }
@@ -120,8 +134,13 @@ func TestFromTimestampShort(t *testing.T) {
 		expected int64
 	}{
 		{
-			name:     "基准时间",
+			name:     "基准时间（旧格式兼容）",
 			input:    "0",
+			expected: 1704067200, // 2024-01-01 00:00:00 UTC（兼容旧格式）
+		},
+		{
+			name:     "基准时间（标准格式）",
+			input:    "0000",
 			expected: 1704067200, // 2024-01-01 00:00:00 UTC
 		},
 		{
@@ -183,6 +202,7 @@ func TestTimestampShortRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			encoded := ToTimestampShort(tt.input)
 			decoded, err := FromTimestampShort(encoded)
+			t.Logf("encoded: %s, decoded: %d", encoded, decoded)
 			if err != nil {
 				t.Errorf("RoundTrip error for %d: %v", tt.input, err)
 				return

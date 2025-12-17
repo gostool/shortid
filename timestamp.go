@@ -46,7 +46,7 @@ func ToTimestampShort(ts int64) string {
 //
 // 返回：
 //   - string: Base62 编码的字符串，格式为"天数+秒数"（无分隔符）
-//     特殊值：如果 ts 为 0 或等于基准时间，返回 "0"
+//     特殊值：如果 ts 为 0，返回 "0"；基准时间返回 "0000"（4字符）
 func ToTimestampShortWithBaseline(ts int64, baseline int64) string {
 	if ts == 0 {
 		return "0"
@@ -63,12 +63,9 @@ func ToTimestampShortWithBaseline(ts int64, baseline int64) string {
 		seconds += secondsPerDay
 	}
 
-	if days == 0 && seconds == 0 {
-		return "0"
-	}
-
 	// 天数部分：可变宽度 Base62 编码（1-4字符）
 	// 秒数部分：固定3字符 Base62 编码
+	// 基准时间（days=0, seconds=0）返回 "0000"（天数"0" + 秒数"000"），符合4-7字符格式
 	return EncodeBase62Int(days) + encodeWithFixedWidth3(seconds)
 }
 
