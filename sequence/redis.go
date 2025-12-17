@@ -107,7 +107,8 @@ func (r *RedisSequenceProvider) GetSequence(ctx context.Context, key string) (ui
 // SetSequenceExpiration 设置序列号键的过期时间
 //
 // 用于清理过期的序列号键，避免内存/存储泄漏
-// 过期时间建议设置为时间单位的2-3倍（例如：30ms）
+// 过期时间建议设置为时间单位的2-3倍（例如：1s，Redis最小支持值）
+// 注意：Redis不支持小于1s的过期时间，所以最小值为1s
 //
 // 参数：
 //   - ctx: 上下文

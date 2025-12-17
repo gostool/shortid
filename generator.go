@@ -205,8 +205,9 @@ func (g *Generator) nextID(ctx context.Context) (uint64, error) {
 				return 0, fmt.Errorf("failed to get sequence: %w", err)
 			}
 			g.sequence = sequence
-			// 设置序列号键的过期时间（30ms）
-			_ = g.sequenceProvider.SetSequenceExpiration(ctx, sequenceKey, 30*time.Millisecond)
+			// 设置序列号键的过期时间（1s，Redis最小支持值）
+			// 注意：Redis不支持小于1s的过期时间，所以使用1s而不是30ms
+			_ = g.sequenceProvider.SetSequenceExpiration(ctx, sequenceKey, 1*time.Second)
 		} else {
 			// 本地序列号模式
 			g.sequence = (g.sequence + 1) & maskSequence

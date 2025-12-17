@@ -219,7 +219,7 @@ type SequenceProvider interface {
     // 参数：
     //   - ctx: 上下文
     //   - key: 序列号键名
-    //   - expiration: 过期时间，建议设置为时间单位的2-3倍（例如：30ms）
+    //   - expiration: 过期时间，建议设置为时间单位的2-3倍（例如：1s，Redis最小支持值）
     // 返回：
     //   - error: 如果操作失败，返回错误
     SetSequenceExpiration(ctx context.Context, key string, expiration time.Duration) error
@@ -270,7 +270,7 @@ ID生成器接口，基于 Sonyflake 算法生成短ID。
      - 序列号键名：基于时间戳（10ms单位）生成，例如：`shortid:sequence:{elapsedTime}`
      - 序列号范围：0-127（128个/10ms）
      - 如果序列号溢出（达到128），等待下一时间单位
-     - 自动设置序列号键的过期时间（建议30ms）
+     - 自动设置序列号键的过期时间（建议1s，Redis最小支持值）
 5. **短ID转换**：
    - 提取各部分：时间戳(毫秒) + 业务类型 + 机器ID + 序列号
    - 时间戳压缩：使用 `ToTimestampShortMs`（毫秒级）

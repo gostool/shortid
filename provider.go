@@ -85,7 +85,7 @@ type SequenceProvider interface {
 	// 参数：
 	//   - ctx: 上下文
 	//   - key: 序列号键名
-	//   - expiration: 过期时间，建议设置为时间单位的2-3倍（例如：30ms）
+    //   - expiration: 过期时间，建议设置为时间单位的2-3倍（例如：1s，Redis最小支持值）
 	//
 	// 返回：
 	//   - error: 如果操作失败，返回错误
