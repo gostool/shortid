@@ -36,7 +36,7 @@ func TestSDK_HTTPRedis_NextID(t *testing.T) {
 
 	// 测试生成多个ID
 	t.Log("=== HTTP服务：生成NextID ===")
-	const count = 100
+	const count = 10000
 	ids := make([]uint64, count)
 	idMap := make(map[uint64]bool, count)
 
@@ -92,6 +92,11 @@ func TestSDK_HTTPRedis_NextID(t *testing.T) {
 	// 显示前10个ID作为示例
 	t.Log("\n=== 前10个生成的ID（原始数字ID，10进制）===")
 	for i := 0; i < 10 && i < len(ids); i++ {
+		t.Logf("ID[%d]: %d (10进制)", i, ids[i])
+	}
+	// 显示后10个
+	t.Log("\n=== 后10个生成的ID（原始数字ID，10进制）===")
+	for i := len(ids) - 10; i < len(ids); i++ {
 		t.Logf("ID[%d]: %d (10进制)", i, ids[i])
 	}
 }

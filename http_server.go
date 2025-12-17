@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -14,6 +16,58 @@ import (
 type HTTPServer struct {
 	generator *Generator
 	server    *http.Server
+
+	// 统计信息
+	stats *ServerStats
+}
+
+// ServerStats 服务器统计信息
+type ServerStats struct {
+	mu sync.RWMutex
+
+	// 请求统计
+	TotalRequests   int64 // 总请求数
+	SuccessRequests int64 // 成功请求数
+	FailedRequests  int64 // 失败请求数
+
+	// 响应时间统计
+	TotalResponseTime int64 // 总响应时间（纳秒）
+	MinResponseTime   int64 // 最小响应时间（纳秒）
+	MaxResponseTime   int64 // 最大响应时间（纳秒）
+
+	// 时间窗口统计（用于计算QPS）
+	windowStartTime time.Time
+	windowRequests  int64
+
+	// 服务器信息
+	startTime time.Time
+}
+
+// HealthResponse 健康检查响应
+type HealthResponse struct {
+	Status string `json:"status"`
+
+	// 请求统计
+	TotalRequests   int64   `json:"total_requests"`
+	SuccessRequests int64   `json:"success_requests"`
+	FailedRequests  int64   `json:"failed_requests"`
+	SuccessRate     float64 `json:"success_rate"`
+
+	// 性能统计
+	QPS             float64 `json:"qps"`               // 每秒请求数（最近1分钟）
+	AvgResponseTime float64 `json:"avg_response_time"` // 平均响应时间（毫秒）
+	MinResponseTime float64 `json:"min_response_time"` // 最小响应时间（毫秒）
+	MaxResponseTime float64 `json:"max_response_time"` // 最大响应时间（毫秒）
+
+	// 服务器信息
+	Uptime        string `json:"uptime"`          // 运行时间
+	BusinessType  string `json:"business_type"`   // 业务类型
+	MachineID     uint16 `json:"machine_id"`      // 当前机器ID
+	MachineIDMode string `json:"machine_id_mode"` // 机器ID模式：fixed/redis
+	SequenceMode  string `json:"sequence_mode"`   // 序列号模式：local/redis
+
+	// 健康检查
+	RedisHealth string `json:"redis_health,omitempty"` // Redis健康状态
 }
 
 // IDResponse ID生成响应
@@ -39,23 +93,39 @@ func NewHTTPServer(addr, redisAddr string, businessType BusinessType) (*HTTPServ
 		return nil, fmt.Errorf("failed to create machine provider: %w", err)
 	}
 
-	// 创建Redis序列号提供者
-	sequenceProvider, err := createRedisSequenceProviderForHTTP(redisAddr)
-	if err != nil {
-		machineProvider.Close()
-		return nil, fmt.Errorf("failed to create sequence provider: %w", err)
-	}
+	// // 创建Redis序列号提供者
+	// sequenceProvider, err := createRedisSequenceProviderForHTTP(redisAddr)
+	// if err != nil {
+	// 	machineProvider.Close()
+	// 	return nil, fmt.Errorf("failed to create sequence provider: %w", err)
+	// }
 
 	// 创建ID生成器
 	generator, err := NewGenerator(Config{
 		MachineIDProvider: machineProvider,
-		SequenceProvider:  sequenceProvider,
-		BusinessType:      businessType,
+		// SequenceProvider:  sequenceProvider,
+		BusinessType: businessType,
 	})
 	if err != nil {
 		machineProvider.Close()
-		sequenceProvider.Close()
+		// sequenceProvider.Close()
 		return nil, fmt.Errorf("failed to create generator: %w", err)
+	}
+
+	// 服务器启动时立即获取机器ID（Serverless模式）
+	if generator.useMachineProvider {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		machineID, err := machineProvider.GetMachineID(ctx)
+		cancel()
+		if err != nil {
+			machineProvider.Close()
+			return nil, fmt.Errorf("failed to get machine id on startup: %w", err)
+		}
+		generator.machineID = machineID
+		// 设置过期时间（20分钟）
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = machineProvider.SetMachineIDExpiration(ctx2, machineID, 20*time.Minute)
+		cancel2()
 	}
 
 	s := &HTTPServer{
@@ -65,6 +135,12 @@ func NewHTTPServer(addr, redisAddr string, businessType BusinessType) (*HTTPServ
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 10 * time.Second,
 			IdleTimeout:  120 * time.Second,
+		},
+		stats: &ServerStats{
+			startTime:       time.Now(),
+			windowStartTime: time.Now(),
+			MinResponseTime: int64(^uint64(0) >> 1), // 初始化为最大值
+			MaxResponseTime: 0,                      // 初始化为0
 		},
 	}
 
@@ -101,12 +177,22 @@ func (s *HTTPServer) handleNextID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 记录请求开始时间
+	startTime := time.Now()
+
 	// 设置响应头
 	w.Header().Set("Content-Type", "application/json")
 
 	// 生成ID
 	ctx := r.Context()
 	id, err := s.generator.NextID(ctx)
+
+	// 计算响应时间
+	responseTime := time.Since(startTime)
+
+	// 更新统计信息
+	s.updateStats(err == nil, responseTime)
+
 	if err != nil {
 		response := IDResponse{
 			Error: err.Error(),
@@ -123,13 +209,151 @@ func (s *HTTPServer) handleNextID(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// updateStats 更新统计信息
+func (s *HTTPServer) updateStats(success bool, responseTime time.Duration) {
+	atomic.AddInt64(&s.stats.TotalRequests, 1)
+
+	if success {
+		atomic.AddInt64(&s.stats.SuccessRequests, 1)
+	} else {
+		atomic.AddInt64(&s.stats.FailedRequests, 1)
+	}
+
+	// 更新响应时间统计
+	responseTimeNs := int64(responseTime)
+	atomic.AddInt64(&s.stats.TotalResponseTime, responseTimeNs)
+
+	// 更新最小响应时间
+	for {
+		oldMin := atomic.LoadInt64(&s.stats.MinResponseTime)
+		if responseTimeNs >= oldMin {
+			break
+		}
+		if atomic.CompareAndSwapInt64(&s.stats.MinResponseTime, oldMin, responseTimeNs) {
+			break
+		}
+	}
+
+	// 更新最大响应时间
+	for {
+		oldMax := atomic.LoadInt64(&s.stats.MaxResponseTime)
+		if responseTimeNs <= oldMax {
+			break
+		}
+		if atomic.CompareAndSwapInt64(&s.stats.MaxResponseTime, oldMax, responseTimeNs) {
+			break
+		}
+	}
+
+	// 更新时间窗口统计（用于计算QPS）
+	s.stats.mu.Lock()
+	now := time.Now()
+	if now.Sub(s.stats.windowStartTime) >= time.Minute {
+		// 重置时间窗口
+		s.stats.windowStartTime = now
+		s.stats.windowRequests = 0
+	}
+	s.stats.windowRequests++
+	s.stats.mu.Unlock()
+}
+
 // handleHealth 健康检查端点
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"status": "ok",
-	})
+
+	// 获取统计信息
+	stats := s.getStats()
+
+	// 检查Redis健康状态
+	redisHealth := "unknown"
+	if s.generator.machineIDProvider != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := s.generator.machineIDProvider.HealthCheck(ctx); err == nil {
+			redisHealth = "ok"
+		} else {
+			redisHealth = fmt.Sprintf("error: %v", err)
+		}
+	}
+
+	// 确定机器ID模式
+	machineIDMode := "fixed"
+	if s.generator.useMachineProvider {
+		machineIDMode = "redis"
+	}
+
+	// 确定序列号模式
+	sequenceMode := "local"
+	if s.generator.useSequenceProvider {
+		sequenceMode = "redis"
+	}
+
+	// 计算QPS（最近1分钟）
+	s.stats.mu.RLock()
+	windowDuration := time.Since(s.stats.windowStartTime)
+	windowRequests := s.stats.windowRequests
+	s.stats.mu.RUnlock()
+
+	var qps float64
+	if windowDuration > 0 {
+		qps = float64(windowRequests) / windowDuration.Seconds()
+	}
+
+	// 计算成功率
+	var successRate float64
+	if stats.TotalRequests > 0 {
+		successRate = float64(stats.SuccessRequests) / float64(stats.TotalRequests) * 100
+	}
+
+	// 计算平均响应时间
+	var avgResponseTime float64
+	if stats.SuccessRequests > 0 {
+		avgResponseTime = float64(stats.TotalResponseTime) / float64(stats.SuccessRequests) / 1e6 // 转换为毫秒
+	}
+
+	// 计算最小和最大响应时间（如果有请求）
+	var minResponseTime, maxResponseTime float64
+	if stats.SuccessRequests > 0 {
+		// 检查MinResponseTime是否被初始化（如果还是初始值，说明没有成功请求）
+		if stats.MinResponseTime < int64(^uint64(0)>>1) {
+			minResponseTime = float64(stats.MinResponseTime) / 1e6 // 转换为毫秒
+		}
+		maxResponseTime = float64(stats.MaxResponseTime) / 1e6 // 转换为毫秒
+	}
+
+	// 构建响应
+	response := HealthResponse{
+		Status:          "ok",
+		TotalRequests:   stats.TotalRequests,
+		SuccessRequests: stats.SuccessRequests,
+		FailedRequests:  stats.FailedRequests,
+		SuccessRate:     successRate,
+		QPS:             qps,
+		AvgResponseTime: avgResponseTime,
+		MinResponseTime: minResponseTime,
+		MaxResponseTime: maxResponseTime,
+		Uptime:          time.Since(s.stats.startTime).String(),
+		BusinessType:    BusinessType(s.generator.businessType).String(),
+		MachineID:       s.generator.machineID,
+		MachineIDMode:   machineIDMode,
+		SequenceMode:    sequenceMode,
+		RedisHealth:     redisHealth,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// getStats 获取统计信息快照
+func (s *HTTPServer) getStats() ServerStats {
+	return ServerStats{
+		TotalRequests:     atomic.LoadInt64(&s.stats.TotalRequests),
+		SuccessRequests:   atomic.LoadInt64(&s.stats.SuccessRequests),
+		FailedRequests:    atomic.LoadInt64(&s.stats.FailedRequests),
+		TotalResponseTime: atomic.LoadInt64(&s.stats.TotalResponseTime),
+		MinResponseTime:   atomic.LoadInt64(&s.stats.MinResponseTime),
+		MaxResponseTime:   atomic.LoadInt64(&s.stats.MaxResponseTime),
+	}
 }
 
 // createRedisMachineIDProviderForHTTP 创建Redis机器ID提供者（HTTP服务用）
@@ -223,4 +447,3 @@ func (r *redisSequenceProviderImpl) HealthCheck(ctx context.Context) error {
 func (r *redisSequenceProviderImpl) Close() error {
 	return r.client.Close()
 }
-
