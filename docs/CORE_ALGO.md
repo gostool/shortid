@@ -25,7 +25,7 @@ Base62 编码将十进制数字转换为 62 进制字符串，使用字符集：
 ### 1.2 编码实现
 
 ```go
-func ToBase64(in int64) string {
+func ToBase62(in int64) string {
     base := int64(62)
     var result []byte
     
@@ -42,7 +42,7 @@ func ToBase64(in int64) string {
 ### 1.3 解码实现
 
 ```go
-func FromBase64(s string) (int64, error) {
+func FromBase62(s string) (int64, error) {
     base := int64(62)
     result := int64(0)
     
@@ -104,7 +104,7 @@ func ToTimestampShort(ts int64) string {
     days := diff / 86400
     seconds := diff % 86400
     
-    return ToBase64(days) + "." + ToBase64(seconds)
+    return ToBase62(days) + "." + ToBase62(seconds)
 }
 ```
 
@@ -216,15 +216,15 @@ func GenerateWithTimestamp(ts int64) string {
     if enableDate {
         id += EncodeDate(now)  // 日期编码（1-3字符）
     } else {
-        id += ToBase64(now.Unix())  // 完整时间戳（6字符）
+        id += ToBase62(now.Unix())  // 完整时间戳（6字符）
     }
     
     if machineID > 0 {
-        id += ToBase64(machineID)
+        id += ToBase62(machineID)
     }
     
     if sequence > 0 {
-        id += ToBase64(sequence)
+        id += ToBase62(sequence)
     }
     
     return id
@@ -300,9 +300,9 @@ func EncodeDate(year, month, day int) string {
         if days < 62 {
             return string(base62Chars[days])  // 1字符
         }
-        return "+" + ToBase64(days)  // 2-3字符
+        return "+" + ToBase62(days)  // 2-3字符
     } else {
-        return "-" + ToBase64(-days)  // 2-3字符
+        return "-" + ToBase62(-days)  // 2-3字符
     }
 }
 ```
@@ -447,7 +447,7 @@ func encodeWithVariableWidth(num, max int64) string {
 基于 Apple M1 Pro 的基准测试：
 
 ```
-BenchmarkPerformance/base64_encode-8          9361320    121.3 ns/op
+BenchmarkPerformance/Base62_encode-8          9361320    121.3 ns/op
 BenchmarkPerformance/timestamp_encode-8       8678692    140.4 ns/op
 BenchmarkPerformance/id_generate-8            4306465    287.9 ns/op
 
