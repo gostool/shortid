@@ -7,7 +7,107 @@ import (
 )
 
 // ============================================================================
-// 1. 短编码算法（Short Encoding）
+// 短编码算法配置（内部使用）
+// ============================================================================
+
+// shortEncodingConfig 短编码算法配置
+type shortEncodingConfig struct {
+	unitsPerDay    int64                       // 一天的单位数（秒/毫秒/纳秒）
+	timePartWidth  int                         // 时间部分的固定宽度（3/5/8字符）
+	minLength      int                         // 最小长度（4/6/9字符）
+	maxTimeInDay   int64                       // 一天内的最大时间单位数
+	decodeTimePart func(string) (int64, error) // 解码时间部分的函数
+	encodeTimePart func(int64) string          // 编码时间部分的函数
+}
+
+// 预定义的精度配置
+var (
+	secondConfig = shortEncodingConfig{
+		unitsPerDay:    int64(SecondsPerDay),
+		timePartWidth:  3,
+		minLength:      4,
+		maxTimeInDay:   MaxSecondsInDay,
+		decodeTimePart: decodeWithFixedWidth3,
+		encodeTimePart: encodeWithFixedWidth3,
+	}
+
+	millisecondConfig = shortEncodingConfig{
+		unitsPerDay:    int64(MillisecondsPerDay),
+		timePartWidth:  5,
+		minLength:      6,
+		maxTimeInDay:   MaxMillisecondsInDay,
+		decodeTimePart: decodeWithFixedWidth5,
+		encodeTimePart: encodeWithFixedWidth5,
+	}
+
+	nanosecondConfig = shortEncodingConfig{
+		unitsPerDay:    int64(NanosecondsPerDay),
+		timePartWidth:  8,
+		minLength:      9,
+		maxTimeInDay:   MaxNanosecondsInDay,
+		decodeTimePart: decodeWithFixedWidth8,
+		encodeTimePart: encodeWithFixedWidth8,
+	}
+)
+
+// ============================================================================
+// 1. 短编码算法（Short Encoding）- 通用实现
+// ============================================================================
+
+// toTimestampShortInternal 通用的短编码实现
+func toTimestampShortInternal(ts int64, baseline int64, config shortEncodingConfig) string {
+	if ts == 0 {
+		return "0"
+	}
+
+	diff := ts - baseline
+	days := diff / config.unitsPerDay
+	timeUnits := diff % config.unitsPerDay
+
+	// 处理负数时间单位（当diff为负数时）
+	if timeUnits < 0 {
+		days--
+		timeUnits += config.unitsPerDay
+	}
+
+	// 天数部分：可变宽度 Base62 编码（1-4字符）
+	// 时间部分：固定宽度 Base62 编码
+	return EncodeBase62Int(days) + config.encodeTimePart(timeUnits)
+}
+
+// fromTimestampShortInternal 通用的短编码解码实现
+func fromTimestampShortInternal(s string, baseline int64, config shortEncodingConfig) (int64, error) {
+	if s == "0" {
+		return baseline, nil
+	}
+
+	if len(s) < config.minLength {
+		return 0, fmt.Errorf("invalid format: %s (too short, need at least %d characters)", s, config.minLength)
+	}
+
+	// 时间部分：固定宽度（从末尾取）
+	// 天数部分：剩余部分（1-4个字符）
+	splitIdx := len(s) - config.timePartWidth
+	timePart := s[splitIdx:]
+	daysPart := s[:splitIdx]
+
+	// 解码时间部分
+	timeUnits, err := config.decodeTimePart(timePart)
+	if err != nil {
+		return 0, fmt.Errorf("invalid time part %s: %w", timePart, err)
+	}
+
+	// 解码天数（可变宽度）
+	days, err := DecodeBase62(daysPart)
+	if err != nil {
+		return 0, fmt.Errorf("invalid days part %s: %w", daysPart, err)
+	}
+
+	return baseline + days*config.unitsPerDay + timeUnits, nil
+}
+
+// ============================================================================
+// 1.1 秒级短编码算法（Second Short Encoding）
 // ============================================================================
 
 // ToTimestampShort 将时间戳编码为短格式字符串。
@@ -48,25 +148,7 @@ func ToTimestampShort(ts int64) string {
 //   - string: Base62 编码的字符串，格式为"天数+秒数"（无分隔符）
 //     特殊值：如果 ts 为 0，返回 "0"；基准时间返回 "0000"（4字符）
 func ToTimestampShortWithBaseline(ts int64, baseline int64) string {
-	if ts == 0 {
-		return "0"
-	}
-
-	diff := ts - baseline
-	secondsPerDay := int64(SecondsPerDay)
-	days := diff / secondsPerDay
-	seconds := diff % secondsPerDay
-
-	// 处理负数秒数（当diff为负数时）
-	if seconds < 0 {
-		days--
-		seconds += secondsPerDay
-	}
-
-	// 天数部分：可变宽度 Base62 编码（1-4字符）
-	// 秒数部分：固定3字符 Base62 编码
-	// 基准时间（days=0, seconds=0）返回 "0000"（天数"0" + 秒数"000"），符合4-7字符格式
-	return EncodeBase62Int(days) + encodeWithFixedWidth3(seconds)
+	return toTimestampShortInternal(ts, baseline, secondConfig)
 }
 
 // FromTimestampShort 解码时间戳短编码字符串为时间戳。
@@ -105,33 +187,7 @@ func FromTimestampShort(s string) (int64, error) {
 //     特殊值：如果 s 为 "0"，返回基准时间
 //   - error: 如果字符串格式无效、长度不足或解码失败，返回错误
 func FromTimestampShortWithBaseline(s string, baseline int64) (int64, error) {
-	if s == "0" {
-		return baseline, nil
-	}
-
-	if len(s) < 4 {
-		return 0, fmt.Errorf("invalid format: %s (too short, need at least 4 characters)", s)
-	}
-
-	// 秒数部分：固定3个字符（从末尾取）
-	// 天数部分：剩余部分（1-4个字符）
-	splitIdx := len(s) - 3
-	secondsPart := s[splitIdx:]
-	daysPart := s[:splitIdx]
-
-	// 解码秒数（固定3字符）
-	seconds, err := decodeWithFixedWidth3(secondsPart)
-	if err != nil {
-		return 0, fmt.Errorf("invalid seconds part %s: %w", secondsPart, err)
-	}
-
-	// 解码天数（可变宽度）
-	days, err := DecodeBase62(daysPart)
-	if err != nil {
-		return 0, fmt.Errorf("invalid days part %s: %w", daysPart, err)
-	}
-
-	return baseline + days*int64(SecondsPerDay) + seconds, nil
+	return fromTimestampShortInternal(s, baseline, secondConfig)
 }
 
 // ============================================================================
@@ -531,8 +587,209 @@ func decodeWithFixedWidth2(s string, max int64) (int64, error) {
 //   - int64: 解码后的数字，范围 0-86399（一天内的最大秒数）
 //   - error: 如果字符串长度不是3字符、格式无效或值超出范围，返回错误
 func decodeWithFixedWidth3(s string) (int64, error) {
-	if len(s) != 3 {
-		return 0, fmt.Errorf("invalid width: expected 3 characters, got %d", len(s))
+	return decodeWithFixedWidth(s, 3, MaxSecondsInDay)
+}
+
+// ============================================================================
+// 4. 毫秒级短编码算法（Millisecond Short Encoding）
+// ============================================================================
+
+// ToTimestampShortMs 将毫秒级时间戳编码为短格式字符串。
+//
+// 使用默认基准时间（2024-01-01 00:00:00 UTC）将毫秒级时间戳分解为天数和毫秒数两部分，
+// 分别进行 Base62 编码后直接拼接。
+//
+// 编码格式：Base62(天数，可变宽度) + Base62(毫秒数，固定5字符)
+// 总长度：6-9 字符
+//
+// 参数：
+//   - tsMs: 要编码的时间戳（Unix 时间戳，毫秒）
+//
+// 返回：
+//   - string: Base62 编码的字符串，格式为"天数+毫秒数"（无分隔符）
+//     特殊值：如果 tsMs 为 0，返回 "0"
+//
+// 示例：
+//
+//	ToTimestampShortMs(1704067200000) // 返回 "0000000"（基准时间）
+//	ToTimestampShortMs(1704153600000) // 返回 "1000000"（基准时间+1天）
+func ToTimestampShortMs(tsMs int64) string {
+	return ToTimestampShortMsWithBaseline(tsMs, DefaultSnowflakeEpochMs)
+}
+
+// ToTimestampShortMsWithBaseline 使用自定义基准时间将毫秒级时间戳编码为短格式字符串。
+//
+// 将毫秒级时间戳相对于指定基准时间分解为天数和毫秒数两部分，分别进行 Base62 编码后拼接。
+//
+// 编码格式：Base62(天数，可变宽度) + Base62(毫秒数，固定5字符)
+// 总长度：6-9 字符
+//
+// 参数：
+//   - tsMs: 要编码的时间戳（Unix 时间戳，毫秒）
+//   - baselineMs: 基准时间戳（Unix 时间戳，毫秒）
+//
+// 返回：
+//   - string: Base62 编码的字符串，格式为"天数+毫秒数"（无分隔符）
+//     特殊值：如果 tsMs 为 0，返回 "0"；基准时间返回 "0000000"（7字符）
+func ToTimestampShortMsWithBaseline(tsMs int64, baselineMs int64) string {
+	return toTimestampShortInternal(tsMs, baselineMs, millisecondConfig)
+}
+
+// FromTimestampShortMs 解码毫秒级时间戳短编码字符串为时间戳。
+//
+// 使用默认基准时间（2024-01-01 00:00:00 UTC）解码毫秒级短编码字符串。
+//
+// 输入格式：Base62(天数，可变宽度) + Base62(毫秒数，固定5字符)
+// 解析规则：从字符串末尾取 5 个字符作为毫秒数部分，剩余部分作为天数部分
+//
+// 参数：
+//   - s: Base62 编码的字符串，长度至少 6 字符
+//
+// 返回：
+//   - int64: 解码后的时间戳（Unix 时间戳，毫秒）
+//   - error: 如果字符串格式无效或长度不足，返回错误
+//
+// 示例：
+//
+//	FromTimestampShortMs("0000000") // 返回 1704067200000, nil（基准时间）
+//	FromTimestampShortMs("1000000") // 返回 1704153600000, nil（基准时间+1天）
+func FromTimestampShortMs(s string) (int64, error) {
+	return FromTimestampShortMsWithBaseline(s, DefaultSnowflakeEpochMs)
+}
+
+// FromTimestampShortMsWithBaseline 使用自定义基准时间解码毫秒级时间戳短编码字符串。
+//
+// 输入格式：Base62(天数，可变宽度) + Base62(毫秒数，固定5字符)
+// 解析规则：从字符串末尾取 5 个字符作为毫秒数部分，剩余部分作为天数部分
+//
+// 参数：
+//   - s: Base62 编码的字符串，长度至少 6 字符
+//   - baselineMs: 基准时间戳（Unix 时间戳，毫秒），必须与编码时使用的基准时间一致
+//
+// 返回：
+//   - int64: 解码后的时间戳（Unix 时间戳，毫秒）
+//     特殊值：如果 s 为 "0"，返回基准时间
+//   - error: 如果字符串格式无效、长度不足或解码失败，返回错误
+func FromTimestampShortMsWithBaseline(s string, baselineMs int64) (int64, error) {
+	return fromTimestampShortInternal(s, baselineMs, millisecondConfig)
+}
+
+// ============================================================================
+// 5. 纳秒级短编码算法（Nanosecond Short Encoding）
+// ============================================================================
+
+// ToTimestampShortNs 将纳秒级时间戳编码为短格式字符串。
+//
+// 使用默认基准时间（2024-01-01 00:00:00 UTC）将纳秒级时间戳分解为天数和纳秒数两部分，
+// 分别进行 Base62 编码后直接拼接。
+//
+// 编码格式：Base62(天数，可变宽度) + Base62(纳秒数，固定8字符)
+// 总长度：9-12 字符
+//
+// 参数：
+//   - tsNs: 要编码的时间戳（Unix 时间戳，纳秒）
+//
+// 返回：
+//   - string: Base62 编码的字符串，格式为"天数+纳秒数"（无分隔符）
+//     特殊值：如果 tsNs 为 0，返回 "0"
+//
+// 示例：
+//
+//	ToTimestampShortNs(1704067200000000000) // 返回 "0000000000"（基准时间）
+//	ToTimestampShortNs(1704153600000000000) // 返回 "1000000000"（基准时间+1天）
+func ToTimestampShortNs(tsNs int64) string {
+	baselineNs := int64(DefaultSnowflakeEpochMs) * 1000000 // 转换为纳秒
+	return ToTimestampShortNsWithBaseline(tsNs, baselineNs)
+}
+
+// ToTimestampShortNsWithBaseline 使用自定义基准时间将纳秒级时间戳编码为短格式字符串。
+//
+// 将纳秒级时间戳相对于指定基准时间分解为天数和纳秒数两部分，分别进行 Base62 编码后拼接。
+//
+// 编码格式：Base62(天数，可变宽度) + Base62(纳秒数，固定8字符)
+// 总长度：9-12 字符
+//
+// 参数：
+//   - tsNs: 要编码的时间戳（Unix 时间戳，纳秒）
+//   - baselineNs: 基准时间戳（Unix 时间戳，纳秒）
+//
+// 返回：
+//   - string: Base62 编码的字符串，格式为"天数+纳秒数"（无分隔符）
+//     特殊值：如果 tsNs 为 0，返回 "0"；基准时间返回 "0000000000"（10字符）
+func ToTimestampShortNsWithBaseline(tsNs int64, baselineNs int64) string {
+	return toTimestampShortInternal(tsNs, baselineNs, nanosecondConfig)
+}
+
+// FromTimestampShortNs 解码纳秒级时间戳短编码字符串为时间戳。
+//
+// 使用默认基准时间（2024-01-01 00:00:00 UTC）解码纳秒级短编码字符串。
+//
+// 输入格式：Base62(天数，可变宽度) + Base62(纳秒数，固定8字符)
+// 解析规则：从字符串末尾取 8 个字符作为纳秒数部分，剩余部分作为天数部分
+//
+// 参数：
+//   - s: Base62 编码的字符串，长度至少 9 字符
+//
+// 返回：
+//   - int64: 解码后的时间戳（Unix 时间戳，纳秒）
+//   - error: 如果字符串格式无效或长度不足，返回错误
+//
+// 示例：
+//
+//	FromTimestampShortNs("0000000000") // 返回 1704067200000000000, nil（基准时间）
+//	FromTimestampShortNs("1000000000") // 返回 1704153600000000000, nil（基准时间+1天）
+func FromTimestampShortNs(s string) (int64, error) {
+	baselineNs := int64(DefaultSnowflakeEpochMs) * 1000000 // 转换为纳秒
+	return FromTimestampShortNsWithBaseline(s, baselineNs)
+}
+
+// FromTimestampShortNsWithBaseline 使用自定义基准时间解码纳秒级时间戳短编码字符串。
+//
+// 输入格式：Base62(天数，可变宽度) + Base62(纳秒数，固定8字符)
+// 解析规则：从字符串末尾取 8 个字符作为纳秒数部分，剩余部分作为天数部分
+//
+// 参数：
+//   - s: Base62 编码的字符串，长度至少 9 字符
+//   - baselineNs: 基准时间戳（Unix 时间戳，纳秒），必须与编码时使用的基准时间一致
+//
+// 返回：
+//   - int64: 解码后的时间戳（Unix 时间戳，纳秒）
+//     特殊值：如果 s 为 "0"，返回基准时间
+//   - error: 如果字符串格式无效、长度不足或解码失败，返回错误
+func FromTimestampShortNsWithBaseline(s string, baselineNs int64) (int64, error) {
+	return fromTimestampShortInternal(s, baselineNs, nanosecondConfig)
+}
+
+// ============================================================================
+// 辅助函数：固定宽度编码/解码
+// ============================================================================
+
+// encodeWithFixedWidth5 将数字编码为固定宽度5字符的 Base62 字符串。
+//
+// 参数：
+//   - num: 要编码的数字
+//
+// 返回：
+//   - string: 固定5字符的 Base62 编码字符串
+func encodeWithFixedWidth5(num int64) string {
+	return encodeWithFixedWidth(num, 5)
+}
+
+// encodeWithFixedWidth8 将数字编码为固定宽度8字符的 Base62 字符串。
+//
+// 参数：
+//   - num: 要编码的数字
+//
+// 返回：
+//   - string: 固定8字符的 Base62 编码字符串
+func encodeWithFixedWidth8(num int64) string {
+	return encodeWithFixedWidth(num, 8)
+}
+
+// decodeWithFixedWidth 通用的固定宽度解码函数
+func decodeWithFixedWidth(s string, width int, maxValue int64) (int64, error) {
+	if len(s) != width {
+		return 0, fmt.Errorf("invalid width: expected %d characters, got %d", width, len(s))
 	}
 
 	result, err := DecodeBase62(s)
@@ -540,9 +797,33 @@ func decodeWithFixedWidth3(s string) (int64, error) {
 		return 0, err
 	}
 
-	if result > MaxSecondsInDay {
-		return 0, fmt.Errorf("value out of range: %d (max: %d)", result, MaxSecondsInDay)
+	if result > maxValue {
+		return 0, fmt.Errorf("value out of range: %d (max: %d)", result, maxValue)
 	}
 
 	return result, nil
+}
+
+// decodeWithFixedWidth5 解码固定宽度5字符的 Base62 字符串为数字。
+//
+// 参数：
+//   - s: Base62 编码的字符串，必须恰好5字符
+//
+// 返回：
+//   - int64: 解码后的数字，范围 0-86399999（一天内的最大毫秒数）
+//   - error: 如果字符串长度不是5字符、格式无效或值超出范围，返回错误
+func decodeWithFixedWidth5(s string) (int64, error) {
+	return decodeWithFixedWidth(s, 5, MaxMillisecondsInDay)
+}
+
+// decodeWithFixedWidth8 解码固定宽度8字符的 Base62 字符串为数字。
+//
+// 参数：
+//   - s: Base62 编码的字符串，必须恰好8字符
+//
+// 返回：
+//   - int64: 解码后的数字，范围 0-86399999999999（一天内的最大纳秒数）
+//   - error: 如果字符串长度不是8字符、格式无效或值超出范围，返回错误
+func decodeWithFixedWidth8(s string) (int64, error) {
+	return decodeWithFixedWidth(s, 8, MaxNanosecondsInDay)
 }

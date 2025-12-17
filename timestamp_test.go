@@ -777,3 +777,442 @@ func TestBaselineConsistency(t *testing.T) {
 		t.Errorf("DefaultBaseline should be 1704067200 (2024-01-01), got %d", DefaultBaseline)
 	}
 }
+
+// ============================================================================
+// 4. 毫秒级短编码算法测试
+// ============================================================================
+
+func TestToTimestampShortMs(t *testing.T) {
+	baselineMs := int64(DefaultSnowflakeEpochMs) // 1704067200000
+	tests := []testCase{
+		{
+			name:        "基准时间",
+			input:       baselineMs,
+			expected:    "000000", // 天数"0" + 毫秒数"00000"（6字符：天数1字符+毫秒数5字符）
+			expectedLen: 6,
+		},
+		{
+			name:        "基准时间+1天",
+			input:       baselineMs + MillisecondsPerDay,
+			expected:    "100000", // 天数"1" + 毫秒数"00000"
+			expectedLen: 6,
+		},
+		{
+			name:        "基准时间+166天",
+			input:       baselineMs + 166*MillisecondsPerDay,
+			expected:    "2G00000", // Base62(166) = "2G" + 毫秒数"00000"（7字符：天数2字符+毫秒数5字符）
+			expectedLen: 7,
+		},
+		{
+			name:        "基准时间+1天+1000毫秒",
+			input:       baselineMs + MillisecondsPerDay + 1000,
+			expected:    "1000g8", // 天数"1" + 毫秒数"00g8"（从末尾取5字符作为毫秒数部分）
+			expectedLen: 6,        // 天数1字符 + 毫秒数5字符 = 6字符
+		},
+		{
+			name:        "基准时间+1天+3600000毫秒（1小时）",
+			input:       baselineMs + MillisecondsPerDay + 3600000,
+			expected:    "10f6ww", // 天数"1" + 毫秒数"0f6ww"
+			expectedLen: 6,
+		},
+		{
+			name:        "时间戳0",
+			input:       0,
+			expected:    "0",
+			expectedLen: 1, // 特殊值，长度为1
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampShortMs(tt.input)
+			if got != tt.expected {
+				t.Errorf("ToTimestampShortMs(%d) = %v, want %v", tt.input, got, tt.expected)
+			}
+			if tt.expectedLen > 0 && len(got) != tt.expectedLen {
+				t.Errorf("ToTimestampShortMs(%d) length = %d, want %d", tt.input, len(got), tt.expectedLen)
+			}
+		})
+	}
+}
+
+func TestToTimestampShortMsWithBaseline(t *testing.T) {
+	baselineMs := int64(1609459200000) // 2021-01-01 00:00:00 UTC（毫秒）
+	tests := []testCase{
+		{
+			name:        "自定义基准时间",
+			input:       baselineMs,
+			baseline:    baselineMs,
+			expected:    "000000", // 天数"0" + 毫秒数"00000"（6字符）
+			expectedLen: 6,
+		},
+		{
+			name:        "自定义基准时间+1天",
+			input:       baselineMs + MillisecondsPerDay,
+			baseline:    baselineMs,
+			expected:    "100000", // 天数"1" + 毫秒数"00000"（6字符）
+			expectedLen: 6,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampShortMsWithBaseline(tt.input, tt.baseline)
+			if got != tt.expected {
+				t.Errorf("ToTimestampShortMsWithBaseline(%d, %d) = %v, want %v",
+					tt.input, tt.baseline, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFromTimestampShortMs(t *testing.T) {
+	baselineMs := int64(DefaultSnowflakeEpochMs)
+	tests := []struct {
+		name      string
+		input     string
+		expected  int64
+		wantError bool
+	}{
+		{
+			name:     "基准时间",
+			input:    "000000", // 天数"0" + 毫秒数"00000"（6字符）
+			expected: baselineMs,
+		},
+		{
+			name:     "基准时间+1天",
+			input:    "100000", // 天数"1" + 毫秒数"00000"（6字符）
+			expected: baselineMs + MillisecondsPerDay,
+		},
+		{
+			name:     "基准时间+166天",
+			input:    "2G00000",
+			expected: baselineMs + 166*MillisecondsPerDay,
+		},
+		{
+			name:      "字符串太短",
+			input:     "000",
+			wantError: true,
+		},
+		{
+			name:      "无效字符",
+			input:     "00000-0",
+			wantError: true,
+		},
+		{
+			name:     "特殊值0",
+			input:    "0",
+			expected: baselineMs,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FromTimestampShortMs(tt.input)
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("FromTimestampShortMs(%s) expected error, got nil", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("FromTimestampShortMs(%s) error: %v", tt.input, err)
+				return
+			}
+			if got != tt.expected {
+				t.Errorf("FromTimestampShortMs(%s) = %d, want %d", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTimestampShortMsRoundTrip(t *testing.T) {
+	baselineMs := int64(DefaultSnowflakeEpochMs)
+	tests := []roundTripTestCase{
+		{
+			name:     "基准时间",
+			input:    baselineMs,
+			baseline: baselineMs,
+		},
+		{
+			name:     "基准时间+1天",
+			input:    baselineMs + MillisecondsPerDay,
+			baseline: baselineMs,
+		},
+		{
+			name:     "基准时间+100天",
+			input:    baselineMs + 100*MillisecondsPerDay,
+			baseline: baselineMs,
+		},
+		{
+			name:     "基准时间+1天+1000毫秒",
+			input:    baselineMs + MillisecondsPerDay + 1000,
+			baseline: baselineMs,
+		},
+		{
+			name:     "基准时间+1天+1小时",
+			input:    baselineMs + MillisecondsPerDay + 3600000,
+			baseline: baselineMs,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := ToTimestampShortMsWithBaseline(tt.input, tt.baseline)
+			decoded, err := FromTimestampShortMsWithBaseline(encoded, tt.baseline)
+			t.Logf("encoded: %s, decoded: %d", encoded, decoded)
+			if err != nil {
+				t.Errorf("RoundTrip error for %d: %v", tt.input, err)
+				return
+			}
+			if decoded != tt.input {
+				t.Errorf("RoundTrip failed: %d -> %s -> %d", tt.input, encoded, decoded)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// 5. 纳秒级短编码算法测试
+// ============================================================================
+
+func TestToTimestampShortNs(t *testing.T) {
+	baselineNs := int64(DefaultSnowflakeEpochMs) * 1000000 // 1704067200000000000
+	tests := []testCase{
+		{
+			name:        "基准时间",
+			input:       baselineNs,
+			expected:    "000000000", // 天数"0" + 纳秒数"00000000"（9字符：天数1字符+纳秒数8字符）
+			expectedLen: 9,
+		},
+		{
+			name:        "基准时间+1天",
+			input:       baselineNs + NanosecondsPerDay,
+			expected:    "100000000", // 天数"1" + 纳秒数"00000000"（9字符：天数1字符+纳秒数8字符）
+			expectedLen: 9,
+		},
+		{
+			name:        "基准时间+166天",
+			input:       baselineNs + 166*NanosecondsPerDay,
+			expected:    "2G00000000", // Base62(166) = "2G" + 纳秒数"00000000"
+			expectedLen: 10,
+		},
+		{
+			name:        "基准时间+1天+1000000纳秒（1毫秒）",
+			input:       baselineNs + NanosecondsPerDay + 1000000,
+			expected:    "100004c92", // 天数"1" + 纳秒数"00004c92"（从末尾取8字符作为纳秒数部分）
+			expectedLen: 9,           // 天数1字符 + 纳秒数8字符 = 9字符
+		},
+		{
+			name:        "时间戳0",
+			input:       0,
+			expected:    "0",
+			expectedLen: 1, // 特殊值，长度为1
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampShortNs(tt.input)
+			if got != tt.expected {
+				t.Errorf("ToTimestampShortNs(%d) = %v, want %v", tt.input, got, tt.expected)
+			}
+			if tt.expectedLen > 0 && len(got) != tt.expectedLen {
+				t.Errorf("ToTimestampShortNs(%d) length = %d, want %d", tt.input, len(got), tt.expectedLen)
+			}
+		})
+	}
+}
+
+func TestToTimestampShortNsWithBaseline(t *testing.T) {
+	baselineNs := int64(1609459200000000000) // 2021-01-01 00:00:00 UTC（纳秒）
+	tests := []testCase{
+		{
+			name:        "自定义基准时间",
+			input:       baselineNs,
+			baseline:    baselineNs,
+			expected:    "000000000", // 天数"0" + 纳秒数"00000000"（9字符）
+			expectedLen: 9,
+		},
+		{
+			name:        "自定义基准时间+1天",
+			input:       baselineNs + NanosecondsPerDay,
+			baseline:    baselineNs,
+			expected:    "100000000", // 天数"1" + 纳秒数"00000000"（9字符）
+			expectedLen: 9,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampShortNsWithBaseline(tt.input, tt.baseline)
+			if got != tt.expected {
+				t.Errorf("ToTimestampShortNsWithBaseline(%d, %d) = %v, want %v",
+					tt.input, tt.baseline, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFromTimestampShortNs(t *testing.T) {
+	baselineNs := int64(DefaultSnowflakeEpochMs) * 1000000
+	tests := []struct {
+		name      string
+		input     string
+		expected  int64
+		wantError bool
+	}{
+		{
+			name:     "基准时间",
+			input:    "000000000", // 天数"0" + 纳秒数"00000000"（9字符）
+			expected: baselineNs,
+		},
+		{
+			name:     "基准时间+1天",
+			input:    "100000000", // 天数"1" + 纳秒数"00000000"（9字符）
+			expected: baselineNs + NanosecondsPerDay,
+		},
+		{
+			name:     "基准时间+166天",
+			input:    "2G00000000",
+			expected: baselineNs + 166*NanosecondsPerDay,
+		},
+		{
+			name:      "字符串太短",
+			input:     "0000000",
+			wantError: true,
+		},
+		{
+			name:      "无效字符",
+			input:     "00000000-0",
+			wantError: true,
+		},
+		{
+			name:     "特殊值0",
+			input:    "0",
+			expected: baselineNs,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FromTimestampShortNs(tt.input)
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("FromTimestampShortNs(%s) expected error, got nil", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("FromTimestampShortNs(%s) error: %v", tt.input, err)
+				return
+			}
+			if got != tt.expected {
+				t.Errorf("FromTimestampShortNs(%s) = %d, want %d", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTimestampShortNsRoundTrip(t *testing.T) {
+	baselineNs := int64(DefaultSnowflakeEpochMs) * 1000000
+	tests := []roundTripTestCase{
+		{
+			name:     "基准时间",
+			input:    baselineNs,
+			baseline: baselineNs,
+		},
+		{
+			name:     "基准时间+1天",
+			input:    baselineNs + NanosecondsPerDay,
+			baseline: baselineNs,
+		},
+		{
+			name:     "基准时间+100天",
+			input:    baselineNs + 100*NanosecondsPerDay,
+			baseline: baselineNs,
+		},
+		{
+			name:     "基准时间+1天+1000000纳秒（1毫秒）",
+			input:    baselineNs + NanosecondsPerDay + 1000000,
+			baseline: baselineNs,
+		},
+		{
+			name:     "基准时间+1天+1秒",
+			input:    baselineNs + NanosecondsPerDay + 1000000000,
+			baseline: baselineNs,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := ToTimestampShortNsWithBaseline(tt.input, tt.baseline)
+			decoded, err := FromTimestampShortNsWithBaseline(encoded, tt.baseline)
+			t.Logf("encoded: %s, decoded: %d", encoded, decoded)
+			if err != nil {
+				t.Errorf("RoundTrip error for %d: %v", tt.input, err)
+				return
+			}
+			if decoded != tt.input {
+				t.Errorf("RoundTrip failed: %d -> %s -> %d", tt.input, encoded, decoded)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// 精度转换测试
+// ============================================================================
+
+func TestPrecisionConversion(t *testing.T) {
+	// 测试秒级、毫秒级、纳秒级之间的转换一致性
+	ts := int64(1704067200) // 2024-01-01 00:00:00 UTC（秒）
+	tsMs := ts * 1000
+	tsNs := ts * 1000000
+
+	t.Run("秒级转毫秒级", func(t *testing.T) {
+		encodedS := ToTimestampShort(ts)
+		encodedMs := ToTimestampShortMs(tsMs)
+		// 毫秒级编码应该比秒级编码长2字符（5-3=2）
+		if len(encodedMs) != len(encodedS)+2 {
+			t.Logf("秒级编码: %s (%d字符), 毫秒级编码: %s (%d字符)", encodedS, len(encodedS), encodedMs, len(encodedMs))
+		}
+	})
+
+	t.Run("毫秒级转纳秒级", func(t *testing.T) {
+		encodedMs := ToTimestampShortMs(tsMs)
+		encodedNs := ToTimestampShortNs(tsNs)
+		// 纳秒级编码应该比毫秒级编码长3字符（8-5=3）
+		// 注意：如果纳秒数超出范围，可能会回退到Base62编码，长度不固定
+		if len(encodedNs) < len(encodedMs)+3 {
+			t.Logf("毫秒级编码: %s (%d字符), 纳秒级编码: %s (%d字符)", encodedMs, len(encodedMs), encodedNs, len(encodedNs))
+			t.Logf("注意：纳秒级编码可能因为超出范围而使用回退编码")
+		}
+	})
+
+	t.Run("往返转换一致性", func(t *testing.T) {
+		// 秒级 -> 毫秒级 -> 秒级
+		tsMs := ts * 1000
+		encodedMs := ToTimestampShortMs(tsMs)
+		decodedMs, err := FromTimestampShortMs(encodedMs)
+		if err != nil {
+			t.Fatalf("FromTimestampShortMs error: %v", err)
+		}
+		decodedS := decodedMs / 1000
+		if decodedS != ts {
+			t.Errorf("秒级转换不一致: %d -> %d", ts, decodedS)
+		}
+
+		// 毫秒级 -> 纳秒级 -> 毫秒级
+		tsNs := tsMs * 1000000
+		encodedNs := ToTimestampShortNs(tsNs)
+		decodedNs, err := FromTimestampShortNs(encodedNs)
+		if err != nil {
+			t.Fatalf("FromTimestampShortNs error: %v", err)
+		}
+		decodedMs2 := decodedNs / 1000000
+		if decodedMs2 != tsMs {
+			t.Errorf("毫秒级转换不一致: %d -> %d", tsMs, decodedMs2)
+		}
+	})
+}

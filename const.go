@@ -76,11 +76,38 @@ const (
 	// MaxSecondsInDay 一天内的最大秒数（0-86399）
 	MaxSecondsInDay = 86399
 
+	// MillisecondsPerDay 一天的毫秒数
+	MillisecondsPerDay = 86400000
+
+	// MaxMillisecondsInDay 一天内的最大毫秒数（0-86399999）
+	MaxMillisecondsInDay = 86399999
+
+	// NanosecondsPerDay 一天的纳秒数
+	NanosecondsPerDay = 86400000000000
+
+	// MaxNanosecondsInDay 一天内的最大纳秒数（0-86399999999999）
+	MaxNanosecondsInDay = 86399999999999
+
 	// MaxDaysInYear 一年内的最大天数（1-366）
 	MaxDaysInYear = 366
 
 	// MaxYearOffset 最大年份偏移（支持约100年范围）
 	MaxYearOffset = 100
+
+	// TimestampPrecision 时间戳精度枚举
+	// 用于配置时间戳压缩的精度级别
+)
+
+// TimestampPrecision 时间戳精度类型
+type TimestampPrecision int
+
+const (
+	// PrecisionSecond 秒级精度（默认）
+	PrecisionSecond TimestampPrecision = iota
+	// PrecisionMillisecond 毫秒级精度
+	PrecisionMillisecond
+	// PrecisionNanosecond 纳秒级精度
+	PrecisionNanosecond
 )
 
 // ============================================================================

@@ -18,14 +18,31 @@
 
 ### 算法原理
 
-将时间戳分解为**天数**和**秒数**两部分，分别进行 Base62 编码，然后直接拼接（不使用分隔符）：
+将时间戳分解为**天数**和**时间部分**两部分，分别进行 Base62 编码，然后直接拼接（不使用分隔符）。
 
+根据精度不同，时间部分可以是秒数、毫秒数或纳秒数：
+
+**秒级精度**：
 ```
-时间戳 = baseline + days × 86400 + seconds
+时间戳(秒) = baseline + days × 86400 + seconds
 编码结果 = Base62(days) + Base62(seconds)
 ```
 
+**毫秒级精度**：
+```
+时间戳(毫秒) = baselineMs + days × 86400000 + milliseconds
+编码结果 = Base62(days) + Base62(milliseconds)
+```
+
+**纳秒级精度**：
+```
+时间戳(纳秒) = baselineNs + days × 86400000000000 + nanoseconds
+编码结果 = Base62(days) + Base62(nanoseconds)
+```
+
 ### 编码格式
+
+#### 秒级精度（默认）
 
 **格式说明**：
 - **天数部分**：相对于基准时间的天数差（Base62编码，可变宽度 1-4 字符）
@@ -37,6 +54,85 @@
 **解析规则**：
 - 从字符串末尾取 3 个字符作为秒数部分
 - 剩余部分作为天数部分
+
+**API**：
+```go
+// 编码
+ToTimestampShort(ts int64) string                    // ts 为秒级时间戳
+ToTimestampShortWithBaseline(ts int64, baseline int64) string
+
+// 解码
+FromTimestampShort(s string) (int64, error)
+FromTimestampShortWithBaseline(s string, baseline int64) (int64, error)
+```
+
+#### 毫秒级精度
+
+**格式说明**：
+- **天数部分**：相对于基准时间的天数差（Base62编码，可变宽度 1-4 字符）
+- **毫秒数部分**：一天内的毫秒数（0-86399999，Base62编码，固定 5 字符）
+- **拼接方式**：直接拼接，不使用小数点或其他分隔符
+
+**总长度**：6-9 字符（天数1-4字符 + 毫秒数5字符）
+
+**解析规则**：
+- 从字符串末尾取 5 个字符作为毫秒数部分
+- 剩余部分作为天数部分
+
+**API**：
+```go
+// 编码
+ToTimestampShortMs(tsMs int64) string                    // tsMs 为毫秒级时间戳
+ToTimestampShortMsWithBaseline(tsMs int64, baselineMs int64) string
+
+// 解码
+FromTimestampShortMs(s string) (int64, error)
+FromTimestampShortMsWithBaseline(s string, baselineMs int64) (int64, error)
+```
+
+**示例**：
+```go
+// 编码
+tsMs := int64(1704067200000)  // 2024-01-01 00:00:00.000 UTC（毫秒）
+encoded := ToTimestampShortMs(tsMs)  // 返回 "0000000"
+
+// 解码
+decoded, _ := FromTimestampShortMs("0000000")  // 返回 1704067200000
+```
+
+#### 纳秒级精度
+
+**格式说明**：
+- **天数部分**：相对于基准时间的天数差（Base62编码，可变宽度 1-4 字符）
+- **纳秒数部分**：一天内的纳秒数（0-86399999999999，Base62编码，固定 8 字符）
+- **拼接方式**：直接拼接，不使用小数点或其他分隔符
+
+**总长度**：9-12 字符（天数1-4字符 + 纳秒数8字符）
+
+**解析规则**：
+- 从字符串末尾取 8 个字符作为纳秒数部分
+- 剩余部分作为天数部分
+
+**API**：
+```go
+// 编码
+ToTimestampShortNs(tsNs int64) string                    // tsNs 为纳秒级时间戳
+ToTimestampShortNsWithBaseline(tsNs int64, baselineNs int64) string
+
+// 解码
+FromTimestampShortNs(s string) (int64, error)
+FromTimestampShortNsWithBaseline(s string, baselineNs int64) (int64, error)
+```
+
+**示例**：
+```go
+// 编码
+tsNs := int64(1704067200000000000)  // 2024-01-01 00:00:00.000000000 UTC（纳秒）
+encoded := ToTimestampShortNs(tsNs)  // 返回 "0000000000"
+
+// 解码
+decoded, _ := FromTimestampShortNs("0000000000")  // 返回 1704067200000000000
+```
 
 ### 复杂度分析
 
@@ -57,17 +153,18 @@
 
 | 精度 | 时间部分范围 | 时间部分长度 | 总长度范围 | 相比秒级增加 | 说明 |
 |------|------------|------------|-----------|------------|------|
-| **秒级 (s)** | 0-86399 秒 | 3 字符 | 4-7 字符 | - | 当前实现，适合大多数场景 |
-| **毫秒级 (ms)** | 0-86399999 毫秒 | 5 字符 | 6-9 字符 | +2 字符 | 适合需要毫秒精度的场景 |
-| **纳秒级 (ns)** | 0-86399999999999 纳秒 | 8 字符 | 9-12 字符 | +5 字符 | 适合需要纳秒精度的场景 |
+| **秒级 (s)** | 0-86399 秒 | 3 字符 | 4-7 字符 | - | ✅ 已实现，适合大多数场景 |
+| **毫秒级 (ms)** | 0-86399999 毫秒 | 5 字符 | 6-9 字符 | +2 字符 | ✅ 已实现，适合需要毫秒精度的场景 |
+| **纳秒级 (ns)** | 0-86399999999999 纳秒 | 8 字符 | 9-12 字符 | +5 字符 | ✅ 已实现，适合需要纳秒精度的场景 |
 
 **详细说明**：
 
-1. **秒级精度（当前实现）**
+1. **秒级精度（默认）**
    - Base62(3字符)最大值：238,327 > 86,399 ✓
    - 时间部分：3 字符固定
    - 总长度：4-7 字符（天数1-4 + 秒数3）
    - 示例：`"1000"`（1天+0秒）
+   - **适用场景**：大多数业务场景，订单ID、用户ID等
 
 2. **毫秒级精度**
    - Base62(5字符)最大值：916,132,831 > 86,399,999 ✓
@@ -75,6 +172,7 @@
    - 总长度：6-9 字符（天数1-4 + 毫秒5）
    - 相比秒级增加：2 字符
    - 示例：`"1000000"`（1天+0毫秒）
+   - **适用场景**：需要毫秒级时间戳的场景，如 Sonyflake ID、高精度日志等
 
 3. **纳秒级精度**
    - Base62(8字符)最大值：218,340,105,584,895 > 86,399,999,999,999 ✓
@@ -82,11 +180,33 @@
    - 总长度：9-12 字符（天数1-4 + 纳秒8）
    - 相比秒级增加：5 字符
    - 示例：`"1000000000"`（1天+0纳秒）
+   - **适用场景**：需要极高精度的场景，如性能分析、分布式追踪等
 
 **选择建议**：
-- ✅ **秒级精度**：适合大多数业务场景，长度最短（4-7字符）
-- ⚠️ **毫秒级精度**：适合需要毫秒级时间戳的场景，长度适中（6-9字符）
-- ⚠️ **纳秒级精度**：适合需要极高精度的场景，但长度较长（9-12字符）
+- ✅ **秒级精度**：适合大多数业务场景，长度最短（4-7字符），推荐默认使用
+- ✅ **毫秒级精度**：适合需要毫秒级时间戳的场景，长度适中（6-9字符），**与 Sonyflake 整合时必需**
+- ⚠️ **纳秒级精度**：适合需要极高精度的场景，但长度较长（9-12字符），使用需谨慎
+
+**使用示例**：
+
+```go
+import "github.com/gostool/shortid"
+
+// 秒级精度（默认）
+ts := int64(1704067200)  // 2024-01-01 00:00:00 UTC（秒）
+encoded := shortid.ToTimestampShort(ts)  // "0000"
+decoded, _ := shortid.FromTimestampShort("0000")  // 1704067200
+
+// 毫秒级精度（Sonyflake 场景）
+tsMs := int64(1704067200000)  // 2024-01-01 00:00:00.000 UTC（毫秒）
+encodedMs := shortid.ToTimestampShortMs(tsMs)  // "0000000"
+decodedMs, _ := shortid.FromTimestampShortMs("0000000")  // 1704067200000
+
+// 纳秒级精度（高精度场景）
+tsNs := int64(1704067200000000000)  // 2024-01-01 00:00:00.000000000 UTC（纳秒）
+encodedNs := shortid.ToTimestampShortNs(tsNs)  // "0000000000"
+decodedNs, _ := shortid.FromTimestampShortNs("0000000000")  // 1704067200000000000
+```
 
 ---
 
@@ -179,7 +299,9 @@ else: 返回 [符号] + "y" + Base62(年数)
 
 | 算法 | 编码格式 | 编码长度 | 压缩率 | 适用场景 | 特点 |
 |------|---------|---------|--------|---------|------|
-| 短编码 | `Base62(天数) + Base62(秒数)` | 4-7 字符 | 30-60% | 通用时间戳编码 | 不使用分隔符，易于解析 |
+| 短编码（秒级） | `Base62(天数) + Base62(秒数)` | 4-7 字符 | 30-60% | 通用时间戳编码 | 不使用分隔符，易于解析 |
+| 短编码（毫秒级） | `Base62(天数) + Base62(毫秒数)` | 6-9 字符 | 10-40% | Sonyflake ID、高精度日志 | 支持毫秒精度，与 Sonyflake 兼容 |
+| 短编码（纳秒级） | `Base62(天数) + Base62(纳秒数)` | 9-12 字符 | 0-30% | 极高精度场景 | 支持纳秒精度，长度较长 |
 | 动态编码 | `[符号] + 单位 + Base62(值)` | 2-4 字符 | 70-90% | 短期场景（缓存、会话） | 极短，但需要基准时间 |
 | 紧凑编码 | `YY + DD + SSS` | 7 字符（固定） | 30% | 需要固定长度的场景 | 固定长度，秒级精度 |
 
@@ -476,6 +598,85 @@ else: 返回 [符号] + "y" + Base62(年数)
 2. **错误处理**：明确超出范围时的错误处理策略
 3. **文档完善**：在文档中明确说明各种限制和边界情况
 4. **测试覆盖**：增加边界情况的测试用例
+
+---
+
+## 精度配置说明
+
+### 如何选择精度
+
+1. **秒级精度（推荐默认）**
+   - 适合大多数业务场景
+   - ID 长度最短（4-7字符）
+   - 性能最优
+
+2. **毫秒级精度（Sonyflake 必需）**
+   - 适合需要毫秒级时间戳的场景
+   - 与 Sonyflake 算法兼容
+   - ID 长度适中（6-9字符）
+
+3. **纳秒级精度（特殊场景）**
+   - 适合需要极高精度的场景
+   - ID 长度较长（9-12字符）
+   - 性能开销较大
+
+### 精度转换
+
+如果需要在不同精度间转换，可以使用以下方法：
+
+```go
+// 秒级转毫秒级
+tsMs := ts * 1000
+encodedMs := shortid.ToTimestampShortMs(tsMs)
+
+// 毫秒级转秒级
+ts := tsMs / 1000
+encoded := shortid.ToTimestampShort(ts)
+
+// 毫秒级转纳秒级
+tsNs := tsMs * 1000000
+encodedNs := shortid.ToTimestampShortNs(tsNs)
+```
+
+**注意**：转换会丢失精度，建议直接使用对应精度的函数。
+
+### 完整 API 列表
+
+#### 秒级精度 API
+
+```go
+// 编码
+ToTimestampShort(ts int64) string
+ToTimestampShortWithBaseline(ts int64, baseline int64) string
+
+// 解码
+FromTimestampShort(s string) (int64, error)
+FromTimestampShortWithBaseline(s string, baseline int64) (int64, error)
+```
+
+#### 毫秒级精度 API
+
+```go
+// 编码
+ToTimestampShortMs(tsMs int64) string
+ToTimestampShortMsWithBaseline(tsMs int64, baselineMs int64) string
+
+// 解码
+FromTimestampShortMs(s string) (int64, error)
+FromTimestampShortMsWithBaseline(s string, baselineMs int64) (int64, error)
+```
+
+#### 纳秒级精度 API
+
+```go
+// 编码
+ToTimestampShortNs(tsNs int64) string
+ToTimestampShortNsWithBaseline(tsNs int64, baselineNs int64) string
+
+// 解码
+FromTimestampShortNs(s string) (int64, error)
+FromTimestampShortNsWithBaseline(s string, baselineNs int64) (int64, error)
+```
 
 ---
 
