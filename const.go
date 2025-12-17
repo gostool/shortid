@@ -8,8 +8,8 @@ import "time"
 
 const (
 	// DefaultDateBase 默认日期基准（用于日期编码）
-	// 统一基准时间：2020-01-01 00:00:00 UTC
-	DefaultDateBase = "2020-01-01"
+	// 统一基准时间：2024-01-01 00:00:00 UTC
+	DefaultDateBase = "2024-01-01"
 
 	// DateFormat 日期格式
 	DateFormat = "2006-01-02"
@@ -42,9 +42,9 @@ const (
 // ============================================================================
 
 const (
-	// DefaultBaseline 默认基准时间：2020-01-01 00:00:00 UTC
+	// DefaultBaseline 默认基准时间：2024-01-01 00:00:00 UTC
 	// 统一基准时间，用于所有时间戳和日期编码
-	DefaultBaseline = 1577836800
+	DefaultBaseline = 1704067200
 
 	// SecondsPerDay 一天的秒数
 	SecondsPerDay = 86400
@@ -52,7 +52,7 @@ const (
 	// Base62Base Base62进制基数
 	Base62Base = 62
 
-	// BaseYear 紧凑编码的基准年份
+	// BaseYear 紧凑编码的基准年份（用于年份偏移计算）
 	BaseYear = 2000
 
 	// SingleDayRange 日期编码的便捷范围（小于62天的日期可以用单个字符表示）
@@ -72,6 +72,15 @@ const (
 
 	// UnitYear 年单位（秒数，按365天计算）
 	UnitYear = 365 * UnitDay
+
+	// MaxSecondsInDay 一天内的最大秒数（0-86399）
+	MaxSecondsInDay = 86399
+
+	// MaxDaysInYear 一年内的最大天数（1-366）
+	MaxDaysInYear = 366
+
+	// MaxYearOffset 最大年份偏移（支持约100年范围）
+	MaxYearOffset = 100
 )
 
 // ============================================================================
@@ -84,7 +93,7 @@ const ()
 // 辅助函数
 // ============================================================================
 
-// DefaultDateBaseline 返回默认日期基准（2020-01-01）
+// DefaultDateBaseline 返回默认日期基准（2024-01-01）
 // 统一基准时间，基于 DefaultBaseline 常量
 func DefaultDateBaseline() time.Time {
 	return time.Unix(DefaultBaseline, 0).UTC()
@@ -112,7 +121,7 @@ const (
 	SnowflakeMaxBusiness = (1 << SnowflakeBusinessBits) - 1 // 255
 
 	// Snowflake时间相关
-	// DefaultSnowflakeEpochMs 默认Snowflake纪元（毫秒）：2020-01-01 00:00:00 UTC
+	// DefaultSnowflakeEpochMs 默认Snowflake纪元（毫秒）：2024-01-01 00:00:00 UTC
 	DefaultSnowflakeEpochMs = DefaultBaseline * 1000
 
 	// MaxClockBackwardMs 最大可接受的时钟回退（毫秒）

@@ -1,0 +1,759 @@
+package shortid
+
+import (
+	"fmt"
+	"testing"
+	"time"
+)
+
+// ============================================================================
+// 测试辅助函数
+// ============================================================================
+
+// 测试用例结构
+type testCase struct {
+	name     string
+	input    int64
+	expected string
+	baseline int64 // 可选基准时间
+	now      int64 // 用于动态编码的当前时间
+}
+
+// 编解码测试用例结构
+type roundTripTestCase struct {
+	name      string
+	input     int64
+	baseline  int64 // 可选基准时间
+	now       int64 // 用于动态编码的当前时间
+	tolerance int64 // 容差（用于动态编码）
+}
+
+// 错误测试用例结构
+type errorTestCase struct {
+	name     string
+	input    string
+	baseline int64 // 可选基准时间
+	now      int64 // 用于动态编码的当前时间
+	wantErr  bool
+}
+
+// ============================================================================
+// 1. 短编码算法测试
+// ============================================================================
+
+func TestToTimestampShort(t *testing.T) {
+	tests := []testCase{
+		{
+			name:     "基准时间",
+			input:    1704067200, // 2024-01-01 00:00:00 UTC
+			expected: "0",
+		},
+		{
+			name:     "基准时间+1天",
+			input:    1704067200 + 86400,
+			expected: "1000", // 天数"1" + 秒数"000"
+		},
+		{
+			name:     "基准时间+166天",
+			input:    1704067200 + 166*86400,
+			expected: "2G000", // Base62(166) = "2G" + 秒数"000"
+		},
+		{
+			name:     "基准时间+365天",
+			input:    1704067200 + 365*86400,
+			expected: "5T000", // Base62(365) = "5T" + 秒数"000"
+		},
+		{
+			name:     "基准时间+1天+3600秒",
+			input:    1704067200 + 86400 + 3600,
+			expected: "10W4", // 天数"1" + 秒数"0W4"（3600秒的Base62编码，固定3字符）
+		},
+		{
+			name:     "时间戳0",
+			input:    0,
+			expected: "0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampShort(tt.input)
+			if got != tt.expected {
+				t.Errorf("ToTimestampShort(%d) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestToTimestampShortWithBaseline(t *testing.T) {
+	baseline := int64(1609459200) // 2021-01-01 00:00:00 UTC
+	tests := []testCase{
+		{
+			name:     "自定义基准时间",
+			input:    baseline,
+			baseline: baseline,
+			expected: "0",
+		},
+		{
+			name:     "自定义基准时间+1天",
+			input:    baseline + SecondsPerDay,
+			baseline: baseline,
+			expected: "1000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampShortWithBaseline(tt.input, tt.baseline)
+			if got != tt.expected {
+				t.Errorf("ToTimestampShortWithBaseline(%d, %d) = %v, want %v",
+					tt.input, tt.baseline, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFromTimestampShort(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int64
+	}{
+		{
+			name:     "基准时间",
+			input:    "0",
+			expected: 1704067200, // 2024-01-01 00:00:00 UTC
+		},
+		{
+			name:     "1天后",
+			input:    "1000",
+			expected: 1704067200 + 86400,
+		},
+		{
+			name:     "166天后",
+			input:    "2G000",
+			expected: 1704067200 + 166*86400,
+		},
+		{
+			name:     "1天1小时后",
+			input:    "10W4",
+			expected: 1704067200 + 86400 + 3600,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FromTimestampShort(tt.input)
+			if err != nil {
+				t.Errorf("FromTimestampShort(%s) error: %v", tt.input, err)
+				return
+			}
+			if got != tt.expected {
+				t.Errorf("FromTimestampShort(%s) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTimestampShortRoundTrip(t *testing.T) {
+	tests := []roundTripTestCase{
+		{
+			name:  "基准时间",
+			input: 1704067200, // 2024-01-01 00:00:00 UTC
+		},
+		{
+			name:  "1天后",
+			input: 1704067200 + 86400,
+		},
+		{
+			name:  "100天后",
+			input: 1704067200 + 100*86400,
+		},
+		{
+			name:  "1年后",
+			input: 1704067200 + 365*86400,
+		},
+		{
+			name:  "10年后",
+			input: 1704067200 + 10*365*86400,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := ToTimestampShort(tt.input)
+			decoded, err := FromTimestampShort(encoded)
+			if err != nil {
+				t.Errorf("RoundTrip error for %d: %v", tt.input, err)
+				return
+			}
+			if decoded != tt.input {
+				t.Errorf("RoundTrip failed: %d -> %s -> %d", tt.input, encoded, decoded)
+			}
+		})
+	}
+}
+
+// 测试负数时间戳（基准时间之前）
+// 注意：当前实现不支持负数天数，负数时间戳会使用Base62编码回退
+func TestTimestampShortNegativeDays(t *testing.T) {
+	baseline := int64(DefaultBaseline)
+	tests := []struct {
+		name     string
+		input    int64
+		baseline int64
+	}{
+		{
+			name:     "基准时间-1天",
+			input:    baseline - int64(SecondsPerDay),
+			baseline: baseline,
+		},
+		{
+			name:     "基准时间-1天+1小时",
+			input:    baseline - int64(SecondsPerDay) + 3600,
+			baseline: baseline,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampShortWithBaseline(tt.input, tt.baseline)
+			// 验证编码不为空
+			if got == "" {
+				t.Errorf("ToTimestampShortWithBaseline(%d, %d) returned empty string",
+					tt.input, tt.baseline)
+			}
+			// 负数时间戳可能使用Base62回退编码，长度不固定
+			// 这里只验证编码不为空，不验证具体格式
+			t.Logf("Negative timestamp encoding: %d -> %s (may use fallback encoding)", tt.input, got)
+		})
+	}
+}
+
+// ============================================================================
+// 2. 动态编码算法测试
+// ============================================================================
+
+func TestToTimestampDynamic(t *testing.T) {
+	// 固定当前时间用于测试
+	now := int64(1704153600) // 2024-01-02 00:00:00 UTC
+	tests := []testCase{
+		{
+			name:     "当前时间",
+			input:    now,
+			now:      now,
+			expected: "now",
+		},
+		{
+			name:     "5分钟后",
+			input:    now + 5*UnitMinute,
+			now:      now,
+			expected: "m5",
+		},
+		{
+			name:     "3分钟前",
+			input:    now - 3*UnitMinute,
+			now:      now,
+			expected: "-m3",
+		},
+		{
+			name:     "2小时后",
+			input:    now + 2*UnitHour,
+			now:      now,
+			expected: "h2",
+		},
+		{
+			name:     "1天前",
+			input:    now - SecondsPerDay,
+			now:      now,
+			expected: "-d1",
+		},
+		{
+			name:     "1月后",
+			input:    now + UnitMonth,
+			now:      now,
+			expected: "M1",
+		},
+		{
+			name:     "1年后",
+			input:    now + UnitYear,
+			now:      now,
+			expected: "y1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampDynamicWithNow(tt.input, tt.now)
+			if got != tt.expected {
+				t.Errorf("ToTimestampDynamicWithNow(%d, %d) = %v, want %v",
+					tt.input, tt.now, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFromTimestampDynamic(t *testing.T) {
+	now := int64(1704153600) // 2024-01-02 00:00:00 UTC
+	tests := []struct {
+		name     string
+		input    string
+		now      int64
+		expected int64
+	}{
+		{
+			name:     "当前时间",
+			input:    "now",
+			now:      now,
+			expected: now,
+		},
+		{
+			name:     "5分钟后",
+			input:    "m5",
+			now:      now,
+			expected: now + 5*UnitMinute,
+		},
+		{
+			name:     "3分钟前",
+			input:    "-m3",
+			now:      now,
+			expected: now - 3*UnitMinute,
+		},
+		{
+			name:     "2小时后",
+			input:    "h2",
+			now:      now,
+			expected: now + 2*UnitHour,
+		},
+		{
+			name:     "1天前",
+			input:    "-d1",
+			now:      now,
+			expected: now - SecondsPerDay,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FromTimestampDynamic(tt.input, tt.now)
+			if err != nil {
+				t.Errorf("FromTimestampDynamic(%s, %d) error: %v", tt.input, tt.now, err)
+				return
+			}
+			if got != tt.expected {
+				t.Errorf("FromTimestampDynamic(%s, %d) = %v, want %v",
+					tt.input, tt.now, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTimestampDynamicRoundTrip(t *testing.T) {
+	now := time.Now().Unix()
+	tests := []int64{
+		now,                   // 当前
+		now + 30*UnitMinute,   // 30分钟后
+		now + 3*UnitHour,      // 3小时后
+		now + 2*SecondsPerDay, // 2天后
+		now - 15*UnitMinute,   // 15分钟前
+		now - UnitHour,        // 1小时前
+		now + UnitMonth,       // 1月后
+	}
+
+	for _, ts := range tests {
+		t.Run(fmt.Sprintf("timestamp_%d", ts), func(t *testing.T) {
+			encoded := ToTimestampDynamicWithNow(ts, now)
+			decoded, err := FromTimestampDynamic(encoded, now)
+			if err != nil {
+				t.Errorf("RoundTrip error for %d: %v", ts, err)
+				return
+			}
+			if decoded != ts {
+				t.Errorf("RoundTrip failed: %d -> %s -> %d", ts, encoded, decoded)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// 3. 紧凑编码算法测试
+// ============================================================================
+
+func TestToTimestampCompact(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    int64
+		checkLen bool // 是否检查长度
+	}{
+		{
+			name:     "基准年份",
+			input:    time.Date(BaseYear, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+			checkLen: true,
+		},
+		{
+			name:     "基准年份+1天",
+			input:    time.Date(BaseYear, 1, 2, 0, 0, 0, 0, time.UTC).Unix(),
+			checkLen: true,
+		},
+		{
+			name:     "基准年份+年中",
+			input:    time.Date(BaseYear, 7, 2, 12, 30, 45, 0, time.UTC).Unix(),
+			checkLen: true,
+		},
+		{
+			name:     "2024年",
+			input:    time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+			checkLen: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ToTimestampCompact(tt.input)
+			// 验证编码长度（如果在范围内应该是7字符）
+			if tt.checkLen {
+				year := time.Unix(tt.input, 0).UTC().Year()
+				if year >= BaseYear && year <= BaseYear+MaxYearOffset {
+					if len(got) != 7 {
+						t.Errorf("ToTimestampCompact(%d) = %v (len=%d), want length 7", tt.input, got, len(got))
+					}
+				}
+			}
+			// 验证往返
+			decoded, err := FromTimestampCompact(got)
+			if err != nil {
+				t.Errorf("FromTimestampCompact(%s) error: %v", got, err)
+				return
+			}
+			if decoded != tt.input {
+				t.Errorf("RoundTrip failed: %d -> %s -> %d", tt.input, got, decoded)
+			}
+		})
+	}
+}
+
+func TestFromTimestampCompact(t *testing.T) {
+	// 使用往返测试验证解码正确性
+	tests := []struct {
+		name  string
+		input int64
+	}{
+		{
+			name:  "基准年份开始",
+			input: time.Date(BaseYear, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+		},
+		{
+			name:  "基准年份+167天",
+			input: time.Date(BaseYear, 6, 16, 12, 30, 45, 0, time.UTC).Unix(),
+		},
+		{
+			name:  "2024年开始",
+			input: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded := ToTimestampCompact(tt.input)
+			got, err := FromTimestampCompact(encoded)
+			if err != nil {
+				t.Errorf("FromTimestampCompact(%s) error: %v", encoded, err)
+				return
+			}
+			if got != tt.input {
+				t.Errorf("RoundTrip failed: %d -> %s -> %d", tt.input, encoded, got)
+			}
+		})
+	}
+}
+
+func TestTimestampCompactRoundTrip(t *testing.T) {
+	// 测试2020-2100年范围内的时间戳
+	startYear := 2020
+	endYear := 2050
+
+	for year := startYear; year <= endYear; year++ {
+		for month := 1; month <= 12; month++ {
+			for day := 1; day <= 28; day++ { // 使用28天避免月份天数问题
+				ts := time.Date(year, time.Month(month), day, 12, 30, 45, 0, time.UTC).Unix()
+				t.Run(fmt.Sprintf("compact_%04d_%02d_%02d", year, month, day), func(t *testing.T) {
+					// 只测试在支持范围内的年份
+					if year < BaseYear || year > BaseYear+MaxYearOffset {
+						t.Skipf("Year %d out of range", year)
+						return
+					}
+
+					encoded := ToTimestampCompact(ts)
+					if len(encoded) != 7 {
+						t.Errorf("Compact encoding length should be 7, got %d", len(encoded))
+					}
+
+					decoded, err := FromTimestampCompact(encoded)
+					if err != nil {
+						t.Errorf("Decode error for %s: %v", encoded, err)
+						return
+					}
+					if decoded != ts {
+						t.Errorf("RoundTrip failed: %d -> %s -> %d", ts, encoded, decoded)
+					}
+				})
+			}
+		}
+	}
+}
+
+// ============================================================================
+// 4. 错误处理测试
+// ============================================================================
+
+func TestTimestampShortErrors(t *testing.T) {
+	tests := []errorTestCase{
+		{
+			name:    "字符串太短",
+			input:   "123", // 少于4字符
+			wantErr: true,
+		},
+		{
+			name:    "无效的Base62字符",
+			input:   "1@00", // 包含无效字符
+			wantErr: true,
+		},
+		{
+			name:    "秒数部分无效",
+			input:   "1xyz", // "xyz"不是有效的秒数
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := FromTimestampShort(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("FromTimestampShort(%s) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestTimestampDynamicErrors(t *testing.T) {
+	tests := []errorTestCase{
+		{
+			name:    "字符串太短",
+			input:   "m",
+			now:     time.Now().Unix(),
+			wantErr: true,
+		},
+		{
+			name:    "无效单位",
+			input:   "x5",
+			now:     time.Now().Unix(),
+			wantErr: true,
+		},
+		{
+			name:    "无效数值",
+			input:   "m@",
+			now:     time.Now().Unix(),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := FromTimestampDynamic(tt.input, tt.now)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("FromTimestampDynamic(%s, %d) error = %v, wantErr %v",
+					tt.input, tt.now, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestTimestampCompactErrors(t *testing.T) {
+	tests := []errorTestCase{
+		{
+			name:    "长度错误",
+			input:   "123456", // 6字符
+			wantErr: true,
+		},
+		{
+			name:    "长度错误",
+			input:   "12345678", // 8字符
+			wantErr: true,
+		},
+		{
+			name:    "无效的Base62字符",
+			input:   "12@4567", // 包含无效字符
+			wantErr: true,
+		},
+		{
+			name:    "年份超出范围",
+			input:   "zz01500", // 年份偏移超出100
+			wantErr: true,
+		},
+		{
+			name:    "天数超出范围",
+			input:   "00zz123", // 天数超出366
+			wantErr: true,
+		},
+		{
+			name:    "秒数超出范围",
+			input:   "0001zzz", // 秒数超出86399
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := FromTimestampCompact(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("FromTimestampCompact(%s) error = %v, wantErr %v",
+					tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// 5. 边界情况测试
+// ============================================================================
+
+func TestTimestampBoundaryValues(t *testing.T) {
+	t.Run("短编码最大值", func(t *testing.T) {
+		// 测试大数值
+		ts := int64(DefaultBaseline) + int64(10000*SecondsPerDay)
+		encoded := ToTimestampShort(ts)
+		decoded, err := FromTimestampShort(encoded)
+		if err != nil {
+			t.Errorf("Error decoding large timestamp: %v", err)
+		}
+		if decoded != ts {
+			t.Errorf("Large timestamp roundtrip failed")
+		}
+	})
+
+	t.Run("紧凑编码边界年份", func(t *testing.T) {
+		// 测试支持的边界年份
+		minYear := BaseYear
+		maxYear := BaseYear + MaxYearOffset
+
+		minTs := time.Date(minYear, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+		maxTs := time.Date(maxYear, 12, 31, 23, 59, 59, 0, time.UTC).Unix()
+
+		// 测试最小年份
+		encoded := ToTimestampCompact(minTs)
+		if len(encoded) != 7 {
+			t.Errorf("Min year encoding length should be 7")
+		}
+
+		// 测试最大年份
+		encoded = ToTimestampCompact(maxTs)
+		if len(encoded) != 7 {
+			t.Errorf("Max year encoding length should be 7")
+		}
+	})
+
+	t.Run("紧凑编码超出范围", func(t *testing.T) {
+		// 测试超出范围的年份
+		oldTs := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+		encoded := ToTimestampCompact(oldTs)
+		// 应该回退到Base62编码
+		if len(encoded) == 7 {
+			t.Errorf("Out of range timestamp should not use compact encoding")
+		}
+	})
+}
+
+// ============================================================================
+// 6. 性能基准测试
+// ============================================================================
+
+func BenchmarkToTimestampShort(b *testing.B) {
+	ts := time.Now().Unix()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ToTimestampShort(ts)
+	}
+}
+
+func BenchmarkFromTimestampShort(b *testing.B) {
+	encoded := ToTimestampShort(time.Now().Unix())
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		FromTimestampShort(encoded)
+	}
+}
+
+func BenchmarkToTimestampDynamic(b *testing.B) {
+	ts := time.Now().Unix()
+	now := ts
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ToTimestampDynamicWithNow(ts, now)
+	}
+}
+
+func BenchmarkToTimestampCompact(b *testing.B) {
+	ts := time.Now().Unix()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ToTimestampCompact(ts)
+	}
+}
+
+func BenchmarkFromTimestampCompact(b *testing.B) {
+	encoded := ToTimestampCompact(time.Now().Unix())
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		FromTimestampCompact(encoded)
+	}
+}
+
+// ============================================================================
+// 7. 集成测试
+// ============================================================================
+
+func TestAllAlgorithmsConsistency(t *testing.T) {
+	// 测试同一时间戳在不同算法下的表现
+	ts := time.Date(2024, 6, 15, 12, 30, 45, 0, time.UTC).Unix()
+
+	t.Run("短编码", func(t *testing.T) {
+		encoded := ToTimestampShort(ts)
+		decoded, err := FromTimestampShort(encoded)
+		if err != nil {
+			t.Errorf("Short encoding error: %v", err)
+		}
+		if decoded != ts {
+			t.Errorf("Short encoding roundtrip failed")
+		}
+	})
+
+	t.Run("动态编码", func(t *testing.T) {
+		now := ts
+		encoded := ToTimestampDynamicWithNow(ts, now)
+		if encoded != "now" {
+			t.Errorf("Dynamic encoding for current time should be 'now', got %s", encoded)
+		}
+	})
+
+	t.Run("紧凑编码", func(t *testing.T) {
+		encoded := ToTimestampCompact(ts)
+		if len(encoded) != 7 {
+			t.Errorf("Compact encoding should be 7 characters")
+		}
+		decoded, err := FromTimestampCompact(encoded)
+		if err != nil {
+			t.Errorf("Compact encoding error: %v", err)
+		}
+		if decoded != ts {
+			t.Errorf("Compact encoding roundtrip failed")
+		}
+	})
+}
+
+// 测试基准时间一致性
+func TestBaselineConsistency(t *testing.T) {
+	// 确保文档和代码使用相同的基准时间
+	if DefaultBaseline != 1704067200 {
+		t.Errorf("DefaultBaseline should be 1704067200 (2024-01-01), got %d", DefaultBaseline)
+	}
+}
