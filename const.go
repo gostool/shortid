@@ -153,6 +153,10 @@ const (
 
 	// MaxClockBackwardMs 最大可接受的时钟回退（毫秒）
 	MaxClockBackwardMs = 1000 // 1秒
+
+	// MaxBatchCount 批量生成的最大数量限制
+	// 防止一次性生成过多ID导致内存溢出或性能问题
+	MaxBatchCount = 10000
 )
 
 // GetSnowflakeTimestampShift 获取时间戳位移

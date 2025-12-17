@@ -142,3 +142,197 @@ func TestGenerator_Concurrent(t *testing.T) {
 		t.Errorf("Only %d unique IDs generated, expected at least 50", len(ids))
 	}
 }
+
+func TestGenerator_GenerateBatch(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	// 测试批量生成
+	count := 100
+	ids, err := generator.GenerateBatch(count)
+	if err != nil {
+		t.Fatalf("GenerateBatch() error = %v", err)
+	}
+
+	if len(ids) != count {
+		t.Errorf("GenerateBatch() returned %d IDs, want %d", len(ids), count)
+	}
+
+	// 验证所有ID都是唯一的
+	idMap := make(map[string]bool)
+	for i, id := range ids {
+		if id == "" {
+			t.Errorf("GenerateBatch() returned empty string at index %d", i)
+		}
+		if idMap[id] {
+			t.Errorf("Duplicate ID found at index %d: %s", i, id)
+		}
+		idMap[id] = true
+	}
+
+	t.Logf("✓ 成功批量生成 %d 个唯一ID", count)
+}
+
+func TestGenerator_GenerateBatchWithContext(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	ctx := context.Background()
+	count := 50
+	ids, err := generator.GenerateBatchWithContext(ctx, count)
+	if err != nil {
+		t.Fatalf("GenerateBatchWithContext() error = %v", err)
+	}
+
+	if len(ids) != count {
+		t.Errorf("GenerateBatchWithContext() returned %d IDs, want %d", len(ids), count)
+	}
+
+	// 验证所有ID都是唯一的
+	idMap := make(map[string]bool)
+	for i, id := range ids {
+		if id == "" {
+			t.Errorf("GenerateBatchWithContext() returned empty string at index %d", i)
+		}
+		if idMap[id] {
+			t.Errorf("Duplicate ID found at index %d: %s", i, id)
+		}
+		idMap[id] = true
+	}
+
+	t.Logf("✓ 成功批量生成 %d 个唯一ID", count)
+}
+
+func TestGenerator_NextIDBatch(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	ctx := context.Background()
+	count := 100
+	ids, err := generator.NextIDBatch(ctx, count)
+	if err != nil {
+		t.Fatalf("NextIDBatch() error = %v", err)
+	}
+
+	if len(ids) != count {
+		t.Errorf("NextIDBatch() returned %d IDs, want %d", len(ids), count)
+	}
+
+	// 验证所有ID都是唯一的
+	idMap := make(map[uint64]bool)
+	for i, id := range ids {
+		if id == 0 {
+			t.Errorf("NextIDBatch() returned zero ID at index %d", i)
+		}
+		if idMap[id] {
+			t.Errorf("Duplicate ID found at index %d: %d", i, id)
+		}
+		idMap[id] = true
+	}
+
+	t.Logf("✓ 成功批量生成 %d 个唯一数字ID", count)
+}
+
+func TestGenerator_GenerateBatch_InvalidCount(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	// 测试 count <= 0
+	_, err = generator.GenerateBatch(0)
+	if err == nil {
+		t.Error("GenerateBatch(0) should return error")
+	}
+
+	_, err = generator.GenerateBatch(-1)
+	if err == nil {
+		t.Error("GenerateBatch(-1) should return error")
+	}
+
+	// 测试 count > MaxBatchCount
+	_, err = generator.GenerateBatch(MaxBatchCount + 1)
+	if err == nil {
+		t.Errorf("GenerateBatch(%d) should return error", MaxBatchCount+1)
+	}
+}
+
+func TestGenerator_NextIDBatch_InvalidCount(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	ctx := context.Background()
+
+	// 测试 count <= 0
+	_, err = generator.NextIDBatch(ctx, 0)
+	if err == nil {
+		t.Error("NextIDBatch(0) should return error")
+	}
+
+	_, err = generator.NextIDBatch(ctx, -1)
+	if err == nil {
+		t.Error("NextIDBatch(-1) should return error")
+	}
+
+	// 测试 count > MaxBatchCount
+	_, err = generator.NextIDBatch(ctx, MaxBatchCount+1)
+	if err == nil {
+		t.Errorf("NextIDBatch(%d) should return error", MaxBatchCount+1)
+	}
+}
+
+func TestGenerator_GenerateBatch_LargeCount(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	// 测试较大的批量生成
+	count := 1000
+	ids, err := generator.GenerateBatch(count)
+	if err != nil {
+		t.Fatalf("GenerateBatch() error = %v", err)
+	}
+
+	if len(ids) != count {
+		t.Errorf("GenerateBatch() returned %d IDs, want %d", len(ids), count)
+	}
+
+	// 验证所有ID都是唯一的
+	idMap := make(map[string]bool)
+	for _, id := range ids {
+		if idMap[id] {
+			t.Errorf("Duplicate ID found: %s", id)
+		}
+		idMap[id] = true
+	}
+
+	t.Logf("✓ 成功批量生成 %d 个唯一ID", count)
+	t.Logf("✓ 唯一ID数量: %d", len(idMap))
+}
