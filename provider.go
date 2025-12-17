@@ -2,76 +2,109 @@ package shortid
 
 import (
 	"context"
-	"sync"
 	"time"
 )
 
 // ============================================================================
-// StateProvider 接口定义
+// MachineIDProvider 接口定义
 // ============================================================================
 
-// StateProvider 分布式状态提供者接口
-// 定义了ID生成器所需的分布式状态操作能力
+// MachineIDProvider 机器ID提供者接口
+// 用于 Serverless 环境动态分配机器ID
 // 支持多种实现：Redis（生产环境）、内存（测试环境）
-type StateProvider interface {
+type MachineIDProvider interface {
 	// GetMachineID 获取机器ID（原子递增，取模64）
-	// 在 Serverless 环境中，每次函数启动时动态分配机器ID
+	// 要求：必须保证原子性，返回 0-63 范围内的机器ID
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//
+	// 返回：
+	//   - uint16: 机器ID（0-63）
+	//   - error: 如果操作失败，返回错误
 	GetMachineID(ctx context.Context) (uint16, error)
 
 	// SetMachineIDExpiration 设置机器ID过期时间
-	// 用于 Serverless 环境，设置机器ID的过期时间，支持自动回收
+	// 要求：用于 Serverless 环境，设置机器ID的过期时间，支持自动回收
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//   - machineID: 机器ID
+	//   - expiration: 过期时间，建议设置为函数最大运行时间 + 缓冲时间（例如：20分钟）
+	//
+	// 返回：
+	//   - error: 如果操作失败，返回错误
 	SetMachineIDExpiration(ctx context.Context, machineID uint16, expiration time.Duration) error
 
 	// HealthCheck 健康检查
-	// 用于验证连接是否可用，在ID生成前检查存储系统是否正常
+	// 要求：验证连接是否可用，在ID生成前检查存储系统是否正常
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//
+	// 返回：
+	//   - error: 如果连接不可用，返回错误
 	HealthCheck(ctx context.Context) error
 
 	// Close 关闭连接，释放资源
-	// 在程序退出或资源释放时调用
+	// 要求：在程序退出或资源释放时调用，释放相关资源
+	//
+	// 返回：
+	//   - error: 如果关闭失败，返回错误
 	Close() error
 }
 
 // ============================================================================
-// MemoryProvider 内存实现（测试用）
+// SequenceProvider 接口定义
 // ============================================================================
 
-// MemoryProvider 内存实现的 StateProvider
-// 用于测试环境，无需外部依赖（如 Redis）
-// 注意：内存实现不支持真正的分布式，仅用于单机测试
-type MemoryProvider struct {
-	counter int64
-	mu      sync.Mutex
-}
+// SequenceProvider 序列号提供者接口
+// 用于分布式环境生成序列号
+// 支持多种实现：Redis（生产环境）、内存（测试环境）
+type SequenceProvider interface {
+	// GetSequence 获取序列号（原子递增，取模128）
+	// 要求：必须保证原子性，返回 0-127 范围内的序列号
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//   - key: 序列号键名，通常基于时间戳（10ms单位）生成唯一键
+	//
+	// 返回：
+	//   - uint16: 序列号（0-127）
+	//   - error: 如果操作失败，返回错误
+	//
+	// 说明：
+	//   - 序列号在同一时间单位（10ms）内递增
+	//   - 不同时间单位使用不同的 key，序列号从0开始
+	//   - 如果序列号溢出（达到128），调用方需要等待下一时间单位
+	GetSequence(ctx context.Context, key string) (uint16, error)
 
-// NewMemoryProvider 创建内存 Provider
-func NewMemoryProvider() *MemoryProvider {
-	return &MemoryProvider{}
-}
+	// SetSequenceExpiration 设置序列号键的过期时间
+	// 要求：用于清理过期的序列号键，避免内存/存储泄漏
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//   - key: 序列号键名
+	//   - expiration: 过期时间，建议设置为时间单位的2-3倍（例如：30ms）
+	//
+	// 返回：
+	//   - error: 如果操作失败，返回错误
+	SetSequenceExpiration(ctx context.Context, key string, expiration time.Duration) error
 
-// GetMachineID 获取机器ID（原子递增，取模64）
-func (m *MemoryProvider) GetMachineID(ctx context.Context) (uint16, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.counter++
-	return uint16(m.counter % 64), nil
-}
+	// HealthCheck 健康检查
+	// 要求：验证连接是否可用，在ID生成前检查存储系统是否正常
+	//
+	// 参数：
+	//   - ctx: 上下文
+	//
+	// 返回：
+	//   - error: 如果连接不可用，返回错误
+	HealthCheck(ctx context.Context) error
 
-// SetMachineIDExpiration 设置机器ID过期时间
-// 内存实现无需过期机制，直接返回 nil
-func (m *MemoryProvider) SetMachineIDExpiration(ctx context.Context, machineID uint16, expiration time.Duration) error {
-	// 内存实现无需过期机制
-	return nil
+	// Close 关闭连接，释放资源
+	// 要求：在程序退出或资源释放时调用，释放相关资源
+	//
+	// 返回：
+	//   - error: 如果关闭失败，返回错误
+	Close() error
 }
-
-// HealthCheck 健康检查
-// 内存实现始终健康，直接返回 nil
-func (m *MemoryProvider) HealthCheck(ctx context.Context) error {
-	return nil
-}
-
-// Close 关闭连接
-// 内存实现无需关闭操作，直接返回 nil
-func (m *MemoryProvider) Close() error {
-	return nil
-}
-
