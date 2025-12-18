@@ -16,17 +16,36 @@ func TestGenerator_GenerateID_ShortID(t *testing.T) {
 		t.Fatalf("NewGenerator() error = %v", err)
 	}
 	ctx := context.Background()
+
+	precisionErrors := 0
+	maxDiff := uint64(0)
+
 	for i := 0; i < 100; i++ {
 		id, b62Str, err := generator.GenerateID(ctx)
 		if err != nil {
 			t.Fatalf("GenerateID() error = %v", err)
 		}
-		// t.Logf("id: %d, b62Str: %s", id, b62Str)
+
 		decoded, err := DecodeBase62ToUint(b62Str)
 		if err != nil {
 			t.Fatalf("DecodeBase62ToUint() error = %v", err)
 		}
-		t.Logf("diff %d: id: %d, b62Str: %s, decoded: %d ", id-decoded, id, b62Str, decoded)
+
+		diff := id - decoded
+		if diff > maxDiff {
+			maxDiff = diff
+		}
+
+		if id != decoded {
+			precisionErrors++
+			t.Errorf("精度丢失: id=%d, b62Str=%s, decoded=%d, diff=%d", id, b62Str, decoded, diff)
+		}
+	}
+
+	if precisionErrors > 0 {
+		t.Errorf("发现 %d 个精度丢失问题，最大差值: %d", precisionErrors, maxDiff)
+	} else {
+		t.Logf("✓ 测试通过: 生成 100 个ID，无精度丢失")
 	}
 }
 
