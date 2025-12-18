@@ -6,6 +6,23 @@ import (
 	"time"
 )
 
+// TestGenerator_GenerateID 测试GenerateID方法
+func TestGenerator_GenerateID(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+	ctx := context.Background()
+	id, b62Str, err := generator.GenerateID(ctx)
+	if err != nil {
+		t.Fatalf("GenerateID() error = %v", err)
+	}
+	t.Logf("id: %d, b62Str: %s", id, b62Str)
+}
+
 func TestNewGenerator_WithMachineID(t *testing.T) {
 	// 测试固定机器ID模式
 	generator, err := NewGenerator(Config{

@@ -180,6 +180,40 @@ func (g *Generator) NextID(ctx context.Context) (uint64, error) {
 	return g.nextID(ctx)
 }
 
+// GenerateID 生成ID并返回10进制ID和Base62编码字符串
+// 同时返回原始数字ID和Base62编码的字符串
+//
+// 参数：
+//   - ctx: 上下文
+//
+// 返回：
+//   - uint64: 10进制ID（原始数字ID）
+//   - string: Base62编码的字符串
+//   - error: 如果生成失败，返回错误
+func (g *Generator) GenerateID(ctx context.Context) (uint64, string, error) {
+	// Serverless模式：首次获取机器ID
+	if g.useMachineProvider && g.machineID == 0 {
+		machineID, err := g.machineIDProvider.GetMachineID(ctx)
+		if err != nil {
+			return 0, "", fmt.Errorf("failed to get machine id: %w", err)
+		}
+		g.machineID = machineID
+		// 设置过期时间（20分钟）
+		_ = g.machineIDProvider.SetMachineIDExpiration(ctx, machineID, 20*time.Minute)
+	}
+
+	// 生成64位数字ID
+	id, err := g.nextID(ctx)
+	if err != nil {
+		return 0, "", err
+	}
+
+	// 转换为Base62编码
+	b62Str := EncodeBase62(id)
+
+	return id, b62Str, nil
+}
+
 // nextID 生成64位数字ID（基于Sonyflake算法）
 func (g *Generator) nextID(ctx context.Context) (uint64, error) {
 	const maskSequence = uint16(1<<SnowflakeSequenceBits - 1)
