@@ -6,6 +6,30 @@ import (
 	"time"
 )
 
+// 测试生产短码并解码
+func TestGenerator_GenerateID_ShortID(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		id, b62Str, err := generator.GenerateID(ctx)
+		if err != nil {
+			t.Fatalf("GenerateID() error = %v", err)
+		}
+		// t.Logf("id: %d, b62Str: %s", id, b62Str)
+		decoded, err := DecodeBase62ToUint(b62Str)
+		if err != nil {
+			t.Fatalf("DecodeBase62ToUint() error = %v", err)
+		}
+		t.Logf("diff %d: id: %d, b62Str: %s, decoded: %d ", id-decoded, id, b62Str, decoded)
+	}
+}
+
 // 测试 GenerateIDBatchWithContext
 
 func TestGenerator_GenerateIDBatchWithContext(t *testing.T) {

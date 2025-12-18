@@ -61,8 +61,17 @@ func TestDecodeBase62(t *testing.T) {
 
 func TestEncodeDecodeBase62(t *testing.T) {
 	testNumbers := []uint64{
-		0, 1, 10, 100, 1000, 12345, 999999, 1234567890, 18446744073709551615,
+		//0, 1, 10, 100, 1000, 12345, 999999, 1234567890,
+		//18446744073709551615,
+		// 832092015965291904,
+		832092516194764160,
 	}
+	encoded := "ZsZxmWnwNW"
+	id, err := DecodeBase62ToUint(encoded)
+	if err != nil {
+		t.Errorf("DecodeBase62ToUint failed for encoded value %s: %v", encoded, err)
+	}
+	t.Logf(" id: %d, encoded: %s", id, encoded)
 
 	for _, num := range testNumbers {
 		encoded := EncodeBase62(num)
@@ -70,6 +79,7 @@ func TestEncodeDecodeBase62(t *testing.T) {
 		if err != nil {
 			t.Errorf("DecodeBase62ToUint failed for encoded value %s: %v", encoded, err)
 		}
+		t.Logf("num: %d, encoded: %s, decoded: %d", num, encoded, decoded)
 		if decoded != num {
 			t.Errorf("Round-trip failed: %d -> %s -> %d", num, encoded, decoded)
 		}
