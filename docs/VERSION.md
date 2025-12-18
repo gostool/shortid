@@ -2,11 +2,39 @@
 
 ## 当前版本
 
-**v1.0.4** - 最新稳定版
+**v1.0.5** - 最新稳定版
 
 ## 版本历史
+### v1.0.5 (最新)
 
-### v1.0.4 (最新)
+#### 新增功能
+- ✨ 新增批量ID生成方法，支持一次性生成多个ID，提升批量场景下的性能
+  - `GenerateBatch(count int) ([]string, error)` - 批量生成ID（固定机器ID模式）
+    - 返回ID字符串数组（短ID或数字ID字符串，取决于配置）
+    - 适用于固定机器ID的传统部署场景
+  - `GenerateBatchWithContext(ctx context.Context, count int) ([]string, error)` - 批量生成ID（支持Serverless模式）
+    - 支持Serverless模式和分布式序列号
+    - 返回ID字符串数组（短ID或数字ID字符串，取决于配置）
+  - `GenerateIDBatch(count int) (map[int64]string, error)` - 批量生成ID并返回map（固定机器ID模式）
+    - 返回map结构，key为数字ID（int64），value为Base62编码字符串
+    - 便于通过数字ID快速查找对应的Base62编码
+  - `GenerateIDBatchWithContext(ctx context.Context, count int) (map[int64]string, error)` - 批量生成ID并返回map（支持Serverless模式）
+    - 支持Serverless模式和分布式序列号
+    - 返回map结构，key为数字ID（int64），value为Base62编码字符串
+  - `NextIDBatch(ctx context.Context, count int) ([]uint64, error)` - 批量生成原始数字ID（uint64）
+    - 返回64位数字ID数组，不进行Base62编码
+    - 适用于只需要数字ID的场景
+  - 支持最大批量数量限制（MaxBatchCount = 10000）
+  - 自动预分配切片和map容量，优化内存使用和性能
+
+#### 改进
+- 优化批量生成性能，减少重复的机器ID获取操作
+- 改进错误处理，提供更详细的错误信息（包含失败索引位置）
+- 统一批量生成方法的错误处理机制
+
+---
+
+### v1.0.4 
 
 #### 新增功能
 - ✨ 新增 `GenerateID` 方法，同时返回10进制ID和Base62编码字符串
@@ -91,7 +119,7 @@
 ```go
 import "github.com/gostool/shortid"
 
-fmt.Println(shortid.Version) // 输出: 1.0.4
+fmt.Println(shortid.Version) // 输出: 1.0.5
 ```
 
 ### 查看Git标签
@@ -115,6 +143,48 @@ go get -u github.com/gostool/shortid@latest
 ```
 
 ## 升级指南
+
+### 从 v1.0.4 升级到 v1.0.5
+
+无需修改现有代码，新版本完全向后兼容。
+
+如果需要使用新功能批量生成ID：
+
+```go
+// 批量生成短ID（固定机器ID模式）
+ids, err := generator.GenerateBatch(100)
+if err != nil {
+    // 处理错误
+}
+
+// 批量生成短ID（Serverless模式）
+ids, err := generator.GenerateBatchWithContext(context.Background(), 100)
+if err != nil {
+    // 处理错误
+}
+
+// 批量生成原始数字ID
+numIDs, err := generator.NextIDBatch(context.Background(), 100)
+if err != nil {
+    // 处理错误
+}
+
+// 批量生成ID并返回map（同时包含数字ID和Base62编码）
+result, err := generator.GenerateIDBatch(100)
+if err != nil {
+    // 处理错误
+}
+// result: map[int64]string - key为数字ID，value为Base62编码字符串
+for id, b62Str := range result {
+    // 使用 id 和 b62Str
+}
+
+// Serverless模式
+result, err := generator.GenerateIDBatchWithContext(context.Background(), 100)
+if err != nil {
+    // 处理错误
+}
+```
 
 ### 从 v1.0.3 升级到 v1.0.4
 
@@ -161,5 +231,5 @@ if err != nil {
 
 ---
 
-**最后更新**: 2024-12-17
+**最后更新**: 2025-12-18
 

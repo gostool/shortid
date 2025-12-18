@@ -6,6 +6,33 @@ import (
 	"time"
 )
 
+// 测试 GenerateIDBatchWithContext
+
+func TestGenerator_GenerateIDBatchWithContext(t *testing.T) {
+	generator, err := NewGenerator(Config{
+		MachineID:    1,
+		BusinessType: BusinessOrder,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+	ctx := context.Background()
+	result, err := generator.GenerateIDBatchWithContext(ctx, 100)
+	if err != nil {
+		t.Fatalf("GenerateIDBatchWithContext() error = %v", err)
+	}
+	if len(result) != 100 {
+		t.Errorf("GenerateIDBatchWithContext() returned %d IDs, want 100", len(result))
+	}
+	// 验证每个ID都有对应的Base62编码
+	for id, b62Str := range result {
+		if b62Str == "" {
+			t.Errorf("GenerateIDBatchWithContext() returned empty Base62 string for ID %d", id)
+		}
+		t.Logf("id: %d, b62Str: %s", id, b62Str)
+	}
+}
+
 // TestGenerator_GenerateID 测试GenerateID方法
 func TestGenerator_GenerateID(t *testing.T) {
 	generator, err := NewGenerator(Config{
