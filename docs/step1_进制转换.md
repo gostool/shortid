@@ -28,7 +28,7 @@ if __name__ == '__main__':
 
 ## 核心函数
 * `EncodeBase62(num uint64) string` - Base62编码
-* `DecodeBase62(s string) (int64, error)` - Base62解码为int64
+* `DecodeBase62(s string) (uint64, error)` - Base62解码为uint64
 * `DecodeBase62ToUint(s string) (uint64, error)` - Base62解码为uint64
 * `EncodeWithBase(num uint64, charset string) string` - 通用编码函数
 * `DecodeWithBase(s string, charset string) (uint64, error)` - 通用解码函数

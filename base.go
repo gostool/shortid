@@ -2,7 +2,6 @@ package shortid
 
 import (
 	"errors"
-	"math"
 	"strings"
 )
 
@@ -111,33 +110,14 @@ func EncodeBase62(num uint64) string {
 	return EncodeWithBase(num, base62Chars)
 }
 
-// EncodeBase62Int 将int64数字编码为Base62字符串
-func EncodeBase62Int(num int64) string {
-	if num == 0 {
-		return string(base62Chars[0])
-	}
-
-	if num < 0 {
-		// 处理负数，使用补码表示
-		return EncodeBase62(uint64(num))
-	}
-
-	return EncodeBase62(uint64(num))
+// EncodeBase62Int 将uint64数字编码为Base62字符串
+func EncodeBase62Int(num uint64) string {
+	return EncodeBase62(num)
 }
 
 // DecodeBase62 将Base62字符串解码为数字
-func DecodeBase62(s string) (int64, error) {
-	num, err := DecodeBase62ToUint(s)
-	if err != nil {
-		return 0, err
-	}
-
-	// 检查是否超出int64最大值
-	if num > math.MaxInt64 {
-		return 0, ErrInvalidNumber
-	}
-
-	return int64(num), nil
+func DecodeBase62(s string) (uint64, error) {
+	return DecodeBase62ToUint(s)
 }
 
 // DecodeBase62ToUint 将Base62字符串解码为无符号整数

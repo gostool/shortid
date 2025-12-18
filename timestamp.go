@@ -2,6 +2,7 @@ package shortid
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -72,7 +73,12 @@ func toTimestampShortInternal(ts int64, baseline int64, config shortEncodingConf
 
 	// 天数部分：可变宽度 Base62 编码（1-4字符）
 	// 时间部分：固定宽度 Base62 编码
-	return EncodeBase62Int(days) + config.encodeTimePart(timeUnits)
+	// days 可能是负数，需要取绝对值
+	daysUint := uint64(days)
+	if days < 0 {
+		daysUint = uint64(-days)
+	}
+	return EncodeBase62Int(daysUint) + config.encodeTimePart(timeUnits)
 }
 
 // fromTimestampShortInternal 通用的短编码解码实现
@@ -98,10 +104,15 @@ func fromTimestampShortInternal(s string, baseline int64, config shortEncodingCo
 	}
 
 	// 解码天数（可变宽度）
-	days, err := DecodeBase62(daysPart)
+	daysUint, err := DecodeBase62(daysPart)
 	if err != nil {
 		return 0, fmt.Errorf("invalid days part %s: %w", daysPart, err)
 	}
+	// 转换为 int64（days 应该是正数，但需要检查溢出）
+	if daysUint > math.MaxInt64 {
+		return 0, fmt.Errorf("days value too large: %d", daysUint)
+	}
+	days := int64(daysUint)
 
 	return baseline + days*config.unitsPerDay + timeUnits, nil
 }
@@ -323,10 +334,15 @@ func FromTimestampDynamic(s string, now int64) (int64, error) {
 	valueStr := s[startIdx+1:]
 
 	// 解码数值
-	value, err := DecodeBase62(valueStr)
+	valueUint, err := DecodeBase62(valueStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid value part %s: %w", valueStr, err)
 	}
+	// 转换为 int64（需要检查溢出）
+	if valueUint > math.MaxInt64 {
+		return 0, fmt.Errorf("value too large: %d", valueUint)
+	}
+	value := int64(valueUint)
 
 	// 根据单位计算时间差
 	diff := getUnitSeconds(unit) * value
@@ -394,7 +410,12 @@ func ToTimestampCompact(ts int64) string {
 	// 允许年份偏移 0-100（支持约100年范围）
 	if yearOffset < 0 || yearOffset > MaxYearOffset {
 		// 超出范围，回退到 Base62 编码
-		return EncodeBase62Int(ts)
+		// ts 可能是负数，需要取绝对值
+		tsUint := uint64(ts)
+		if ts < 0 {
+			tsUint = uint64(-ts)
+		}
+		return EncodeBase62Int(tsUint)
 	}
 
 	// 年内天数（1-366）
@@ -493,9 +514,17 @@ func getDayOfYear(t time.Time) int {
 //     如果 diff < 0，返回 "-单位值"；否则返回 "单位值"
 func encodeWithSign(diff int64, unit string, value int64) string {
 	if diff < 0 {
-		return "-" + unit + EncodeBase62Int(value)
+		// value 可能是负数，需要取绝对值
+		if value < 0 {
+			value = -value
+		}
+		return "-" + unit + EncodeBase62Int(uint64(value))
 	}
-	return unit + EncodeBase62Int(value)
+	// value 应该是正数，但为了安全也检查一下
+	if value < 0 {
+		value = -value
+	}
+	return unit + EncodeBase62Int(uint64(value))
 }
 
 // encodeWithFixedWidth 将数字编码为固定宽度的 Base62 字符串。
@@ -514,7 +543,7 @@ func encodeWithFixedWidth(num int64, width int) string {
 		num = 0
 	}
 
-	encoded := EncodeBase62Int(num)
+	encoded := EncodeBase62Int(uint64(num))
 	encodedLen := len(encoded)
 
 	if encodedLen > width {
@@ -566,10 +595,16 @@ func decodeWithFixedWidth2(s string, max int64) (int64, error) {
 		return 0, fmt.Errorf("invalid width: expected 2 characters, got %d", len(s))
 	}
 
-	result, err := DecodeBase62(s)
+	resultUint, err := DecodeBase62(s)
 	if err != nil {
 		return 0, err
 	}
+
+	// 转换为 int64（需要检查溢出）
+	if resultUint > math.MaxInt64 {
+		return 0, fmt.Errorf("value too large: %d", resultUint)
+	}
+	result := int64(resultUint)
 
 	if result >= max {
 		return 0, fmt.Errorf("value out of range: %d (max: %d)", result, max)
@@ -792,10 +827,16 @@ func decodeWithFixedWidth(s string, width int, maxValue int64) (int64, error) {
 		return 0, fmt.Errorf("invalid width: expected %d characters, got %d", width, len(s))
 	}
 
-	result, err := DecodeBase62(s)
+	resultUint, err := DecodeBase62(s)
 	if err != nil {
 		return 0, err
 	}
+
+	// 转换为 int64（需要检查溢出）
+	if resultUint > math.MaxInt64 {
+		return 0, fmt.Errorf("value too large: %d", resultUint)
+	}
+	result := int64(resultUint)
 
 	if result > maxValue {
 		return 0, fmt.Errorf("value out of range: %d (max: %d)", result, maxValue)

@@ -2,10 +2,28 @@
 
 ## 当前版本
 
-**v1.0.5** - 最新稳定版
+**v1.0.6** - 最新稳定版
 
 ## 版本历史
-### v1.0.5 (最新)
+### v1.0.6 (最新)
+
+#### 修复和改进
+- 🔧 **类型统一**: 将所有 Base62 相关函数的 `int64` 类型统一改为 `uint64`
+  - `EncodeBase62Int(num uint64)` - 参数类型从 `int64` 改为 `uint64`
+  - `DecodeBase62(s string) (uint64, error)` - 返回值类型从 `int64` 改为 `uint64`
+  - `GenerateIDBatch` 和 `GenerateIDBatchWithContext` 返回类型从 `map[int64]string` 改为 `map[uint64]string`
+- 🔧 **修复类型转换**: 修复了 `timestamp.go` 中所有相关的类型转换问题
+  - 修复了 `EncodeBase62Int` 调用时的类型转换（处理负数情况）
+  - 修复了 `DecodeBase62` 调用时的类型转换（添加溢出检查）
+- 📝 **文档更新**: 更新了所有相关文档中的函数签名说明
+
+#### 向后兼容性
+- ⚠️ **破坏性变更**: 此版本包含类型变更，可能影响使用 `int64` 类型的代码
+- 建议：将代码中的 `int64` 类型改为 `uint64` 以匹配新的 API
+
+---
+
+### v1.0.5
 
 #### 新增功能
 - ✨ 新增批量ID生成方法，支持一次性生成多个ID，提升批量场景下的性能
@@ -15,12 +33,12 @@
   - `GenerateBatchWithContext(ctx context.Context, count int) ([]string, error)` - 批量生成ID（支持Serverless模式）
     - 支持Serverless模式和分布式序列号
     - 返回ID字符串数组（短ID或数字ID字符串，取决于配置）
-  - `GenerateIDBatch(count int) (map[int64]string, error)` - 批量生成ID并返回map（固定机器ID模式）
-    - 返回map结构，key为数字ID（int64），value为Base62编码字符串
+  - `GenerateIDBatch(count int) (map[uint64]string, error)` - 批量生成ID并返回map（固定机器ID模式）
+    - 返回map结构，key为数字ID（uint64），value为Base62编码字符串
     - 便于通过数字ID快速查找对应的Base62编码
-  - `GenerateIDBatchWithContext(ctx context.Context, count int) (map[int64]string, error)` - 批量生成ID并返回map（支持Serverless模式）
+  - `GenerateIDBatchWithContext(ctx context.Context, count int) (map[uint64]string, error)` - 批量生成ID并返回map（支持Serverless模式）
     - 支持Serverless模式和分布式序列号
-    - 返回map结构，key为数字ID（int64），value为Base62编码字符串
+    - 返回map结构，key为数字ID（uint64），value为Base62编码字符串
   - `NextIDBatch(ctx context.Context, count int) ([]uint64, error)` - 批量生成原始数字ID（uint64）
     - 返回64位数字ID数组，不进行Base62编码
     - 适用于只需要数字ID的场景
@@ -174,7 +192,7 @@ result, err := generator.GenerateIDBatch(100)
 if err != nil {
     // 处理错误
 }
-// result: map[int64]string - key为数字ID，value为Base62编码字符串
+// result: map[uint64]string - key为数字ID，value为Base62编码字符串
 for id, b62Str := range result {
     // 使用 id 和 b62Str
 }

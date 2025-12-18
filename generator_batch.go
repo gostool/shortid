@@ -78,29 +78,29 @@ func (g *Generator) GenerateBatchWithContext(ctx context.Context, count int) ([]
 }
 
 // GenerateIDBatch 批量生成ID并返回10进制ID和Base62编码字符串（固定机器ID模式）
-// 返回map，key为数字ID（int64），value为Base62编码字符串
+// 返回map，key为数字ID（uint64），value为Base62编码字符串
 //
 // 参数：
 //   - count: 需要生成的ID数量
 //
 // 返回：
-//   - map[int64]string: 数字ID到Base62编码字符串的映射
+//   - map[uint64]string: 数字ID到Base62编码字符串的映射
 //   - error: 如果生成失败，返回错误
-func (g *Generator) GenerateIDBatch(count int) (map[int64]string, error) {
+func (g *Generator) GenerateIDBatch(count int) (map[uint64]string, error) {
 	return g.GenerateIDBatchWithContext(context.Background(), count)
 }
 
 // GenerateIDBatchWithContext 批量生成ID并返回10进制ID和Base62编码字符串（支持Serverless模式）
-// 返回map，key为数字ID（int64），value为Base62编码字符串
+// 返回map，key为数字ID（uint64），value为Base62编码字符串
 //
 // 参数：
 //   - ctx: 上下文
 //   - count: 需要生成的ID数量
 //
 // 返回：
-//   - map[int64]string: 数字ID到Base62编码字符串的映射
+//   - map[uint64]string: 数字ID到Base62编码字符串的映射
 //   - error: 如果生成失败，返回错误
-func (g *Generator) GenerateIDBatchWithContext(ctx context.Context, count int) (map[int64]string, error) {
+func (g *Generator) GenerateIDBatchWithContext(ctx context.Context, count int) (map[uint64]string, error) {
 	if count <= 0 {
 		return nil, fmt.Errorf("count must be greater than 0")
 	}
@@ -120,7 +120,7 @@ func (g *Generator) GenerateIDBatchWithContext(ctx context.Context, count int) (
 	}
 
 	// 预分配map
-	result := make(map[int64]string, count)
+	result := make(map[uint64]string, count)
 
 	// 批量生成
 	for i := 0; i < count; i++ {
@@ -133,8 +133,8 @@ func (g *Generator) GenerateIDBatchWithContext(ctx context.Context, count int) (
 		// 转换为Base62编码
 		b62Str := EncodeBase62(id)
 
-		// 将uint64转换为int64并存储到map
-		result[int64(id)] = b62Str
+		// 存储到map
+		result[id] = b62Str
 	}
 
 	return result, nil
