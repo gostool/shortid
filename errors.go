@@ -26,4 +26,12 @@ var (
 	// ErrInvalidConfig 无效配置错误
 	// 当生成器配置字段组合非法时返回此错误
 	ErrInvalidConfig = errors.New("invalid generator config")
+
+	// ErrMachineIDLeaseUnavailable 机器ID租约不可用
+	// 当所有机器ID都被占用或无法申请时返回此错误
+	ErrMachineIDLeaseUnavailable = errors.New("machine id lease unavailable")
+
+	// ErrMachineIDLeaseLost 机器ID租约已失效
+	// 当续租失败或租约已不属于当前实例时返回此错误
+	ErrMachineIDLeaseLost = errors.New("machine id lease lost")
 )

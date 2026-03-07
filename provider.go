@@ -5,6 +5,37 @@ import (
 	"time"
 )
 
+// MachineIDLease 表示机器ID租约。
+//
+// Token 为租约唯一令牌，续租/释放时必须携带，防止误操作其他实例持有的租约。
+type MachineIDLease struct {
+	MachineID uint16
+	Token     string
+	ExpiresAt time.Time
+}
+
+// MachineIDLeaseProvider 机器ID租约提供者接口。
+//
+// 该接口用于分布式/Serverless场景，通过“租约”模式分配机器ID，
+// 支持 Redis、etcd 或其他第三方组件实现。
+type MachineIDLeaseProvider interface {
+	// AcquireMachineIDLease 申请机器ID租约。
+	AcquireMachineIDLease(ctx context.Context, ttl time.Duration) (*MachineIDLease, error)
+
+	// RenewMachineIDLease 续租。
+	// 返回值 ok=false 表示租约已失效/不属于当前持有者。
+	RenewMachineIDLease(ctx context.Context, lease *MachineIDLease, ttl time.Duration) (ok bool, err error)
+
+	// ReleaseMachineIDLease 主动释放租约。
+	ReleaseMachineIDLease(ctx context.Context, lease *MachineIDLease) error
+
+	// HealthCheck 健康检查。
+	HealthCheck(ctx context.Context) error
+
+	// Close 关闭连接，释放资源。
+	Close() error
+}
+
 // ============================================================================
 // MachineIDProvider 接口定义
 // ============================================================================

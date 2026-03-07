@@ -5,12 +5,14 @@
 ## 1. 核心公开接口
 
 - `type Config`
+- `type MachineIDLease`
 - `func ValidateConfig(Config) error`
 - `func NewGenerator(Config) (*Generator, error)`
 - `(*Generator).Generate() (string, error)`
 - `(*Generator).GenerateWithContext(context.Context) (string, error)`
 - `(*Generator).NextID(context.Context) (uint64, error)`
 - `type MachineIDProvider interface`
+- `type MachineIDLeaseProvider interface`
 - `type SequenceProvider interface`
 - 公开编码与时间戳函数（`base.go`/`timestamp.go`）
 
@@ -19,8 +21,10 @@
 - `Generator` 并发安全；同一实例内生成 ID 应保持唯一。
 - `ValidateConfig` 仅做参数与组合合法性校验，不做依赖连通性探测。
 - `MachineID` 与 `MachineIDProvider` 互斥。
+- `MachineID`、`MachineIDProvider`、`MachineIDLeaseProvider` 两两互斥。
 - `MachineID` 取值范围 `0~63`，`Sequence` 取值范围 `0~127`。
 - provider 由调用方通过 `context` 控制超时与取消；实现方不应无限重试。
+- 租约续租/释放必须具备 token 级别 CAS 语义。
 
 ## 3. 错误语义
 

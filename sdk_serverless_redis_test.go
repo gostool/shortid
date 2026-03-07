@@ -47,7 +47,7 @@ func checkRedisAvailable(addr string) bool {
 
 // createRedisMachineIDProvider 创建Redis机器ID提供者
 // 使用http_server.go中定义的函数
-func createRedisMachineIDProvider(addr string) (MachineIDProvider, error) {
+func createRedisMachineIDProvider(addr string) (MachineIDLeaseProvider, error) {
 	return createRedisMachineIDProviderForHTTP(addr)
 }
 
@@ -86,10 +86,10 @@ func TestSDK_ServerlessRedis_ShortID(t *testing.T) {
 
 	// 创建ID生成器
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
-		SequenceProvider:  sequenceProvider, // 使用分布式序列号
-		BusinessType:      BusinessOrder,
-		ReturnRawID:       false, // 返回短ID
+		MachineIDLeaseProvider: machineProvider,
+		SequenceProvider:       sequenceProvider, // 使用分布式序列号
+		BusinessType:           BusinessOrder,
+		ReturnRawID:            false, // 返回短ID
 	})
 	if err != nil {
 		t.Fatalf("NewGenerator() error = %v", err)
@@ -160,7 +160,7 @@ func TestSDK_ServerlessRedis_NextID(t *testing.T) {
 	// defer sequenceProvider.Close()
 
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
+		MachineIDLeaseProvider: machineProvider,
 		// SequenceProvider:  sequenceProvider,
 		BusinessType: BusinessOrder,
 	})
@@ -220,7 +220,7 @@ func TestSDK_ServerlessRedis_Simplified(t *testing.T) {
 
 	// 不设置SequenceProvider，使用默认的本地序列号
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
+		MachineIDLeaseProvider: machineProvider,
 		// SequenceProvider 不设置，使用默认的本地序列号
 		BusinessType: BusinessOrder,
 	})
@@ -281,9 +281,9 @@ func TestSDK_ServerlessRedis_Concurrent(t *testing.T) {
 	defer sequenceProvider.Close()
 
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
-		SequenceProvider:  sequenceProvider,
-		BusinessType:      BusinessOrder,
+		MachineIDLeaseProvider: machineProvider,
+		SequenceProvider:       sequenceProvider,
+		BusinessType:           BusinessOrder,
 	})
 	if err != nil {
 		t.Fatalf("NewGenerator() error = %v", err)

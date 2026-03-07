@@ -26,10 +26,17 @@ type Generator struct {
 	// Serverless模式
 	machineIDProvider  MachineIDProvider
 	useMachineProvider bool
+	machineLease       *MachineIDLease
 
 	// 分布式序列号模式
 	sequenceProvider    SequenceProvider
 	useSequenceProvider bool
+
+	// 租约模式（推荐）
+	machineIDLeaseProvider  MachineIDLeaseProvider
+	useMachineLeaseProvider bool
+	leaseDuration           time.Duration
+	leaseRenewAt            time.Time
 
 	// 输出格式
 	returnRawID bool // true: 返回原始数字ID, false: 返回短ID
@@ -48,6 +55,10 @@ type Config struct {
 	// 与 MachineID 二选一
 	MachineIDProvider MachineIDProvider
 
+	// MachineIDLeaseProvider 机器ID租约提供者（推荐）
+	// 与 MachineID / MachineIDProvider 二选一
+	MachineIDLeaseProvider MachineIDLeaseProvider
+
 	// SequenceProvider 分布式序列号提供者
 	// 可选，如果不设置则使用本地序列号
 	SequenceProvider SequenceProvider
@@ -59,6 +70,9 @@ type Config struct {
 	// false: 返回短ID（Base62编码，默认）
 	// true: 返回原始数字ID（uint64，10进制）
 	ReturnRawID bool
+
+	// MachineIDLeaseDuration 机器ID租约时长（默认20分钟）
+	MachineIDLeaseDuration time.Duration
 }
 
 // ValidateConfig 验证生成器配置是否合法。
@@ -76,7 +90,37 @@ func ValidateConfig(config Config) error {
 	if config.MachineIDProvider != nil && config.MachineID != 0 {
 		return fmt.Errorf("%w: MachineID and MachineIDProvider are mutually exclusive", ErrInvalidConfig)
 	}
+	if config.MachineIDLeaseProvider != nil && config.MachineIDProvider != nil {
+		return fmt.Errorf("%w: MachineIDProvider and MachineIDLeaseProvider are mutually exclusive", ErrInvalidConfig)
+	}
+	if config.MachineIDLeaseProvider != nil && config.MachineID != 0 {
+		return fmt.Errorf("%w: MachineID and MachineIDLeaseProvider are mutually exclusive", ErrInvalidConfig)
+	}
+	if config.MachineIDLeaseDuration < 0 {
+		return fmt.Errorf("%w: MachineIDLeaseDuration must be >= 0", ErrInvalidConfig)
+	}
 	return nil
+}
+
+// New 是面向常见场景的便捷构造函数。
+//
+// 适用：固定机器ID部署（单机/固定节点）。
+func New(machineID uint16, businessType BusinessType) (*Generator, error) {
+	return NewGenerator(Config{
+		MachineID:    machineID,
+		BusinessType: businessType,
+	})
+}
+
+// MustNew 是便捷构造函数的 panic 版本。
+//
+// 适合在程序启动阶段初始化全局实例时使用。
+func MustNew(machineID uint16, businessType BusinessType) *Generator {
+	g, err := New(machineID, businessType)
+	if err != nil {
+		panic(err)
+	}
+	return g
 }
 
 // NewGenerator 创建ID生成器
@@ -93,9 +137,13 @@ func NewGenerator(config Config) (*Generator, error) {
 	}
 
 	g := &Generator{
-		businessType: uint8(config.BusinessType),
-		sequence:     SnowflakeMaxSequence, // 初始化为最大值，首次生成时重置为0
-		returnRawID:  config.ReturnRawID,   // 设置输出格式
+		businessType:  uint8(config.BusinessType),
+		sequence:      SnowflakeMaxSequence, // 初始化为最大值，首次生成时重置为0
+		returnRawID:   config.ReturnRawID,   // 设置输出格式
+		leaseDuration: 20 * time.Minute,
+	}
+	if config.MachineIDLeaseDuration > 0 {
+		g.leaseDuration = config.MachineIDLeaseDuration
 	}
 
 	// 设置基准时间
@@ -105,8 +153,12 @@ func NewGenerator(config Config) (*Generator, error) {
 		g.startTime = config.StartTime.UnixMilli() / 10
 	}
 
-	// 机器ID分配
-	if config.MachineIDProvider != nil {
+	// 机器ID分配（优先租约模式）
+	if config.MachineIDLeaseProvider != nil {
+		g.machineIDLeaseProvider = config.MachineIDLeaseProvider
+		g.useMachineLeaseProvider = true
+		g.machineReady = false
+	} else if config.MachineIDProvider != nil {
 		g.machineIDProvider = config.MachineIDProvider
 		g.useMachineProvider = true
 		g.machineReady = false // 延迟获取机器ID（首次生成时获取）
@@ -182,7 +234,36 @@ func (g *Generator) nextID(ctx context.Context) (uint64, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Serverless模式：首次在锁内获取机器ID，避免并发初始化竞态
+	// 租约模式：首次申请租约，后续按计划续租
+	if g.useMachineLeaseProvider {
+		if !g.machineReady {
+			lease, err := g.machineIDLeaseProvider.AcquireMachineIDLease(ctx, g.leaseDuration)
+			if err != nil {
+				return 0, fmt.Errorf("failed to acquire machine id lease: %w", err)
+			}
+			if lease == nil {
+				return 0, ErrMachineIDLeaseUnavailable
+			}
+			g.machineID = lease.MachineID
+			g.machineLease = lease
+			g.machineReady = true
+			g.leaseRenewAt = nextLeaseRenewTime(time.Now(), g.leaseDuration)
+		} else if time.Now().After(g.leaseRenewAt) {
+			ok, err := g.machineIDLeaseProvider.RenewMachineIDLease(ctx, g.machineLease, g.leaseDuration)
+			if err != nil {
+				return 0, fmt.Errorf("failed to renew machine id lease: %w", err)
+			}
+			if !ok {
+				return 0, ErrMachineIDLeaseLost
+			}
+			if g.machineLease != nil {
+				g.machineLease.ExpiresAt = time.Now().Add(g.leaseDuration)
+			}
+			g.leaseRenewAt = nextLeaseRenewTime(time.Now(), g.leaseDuration)
+		}
+	}
+
+	// 兼容旧Serverless模式：首次在锁内获取机器ID，避免并发初始化竞态
 	if g.useMachineProvider && !g.machineReady {
 		machineID, err := g.machineIDProvider.GetMachineID(ctx)
 		if err != nil {
@@ -190,8 +271,7 @@ func (g *Generator) nextID(ctx context.Context) (uint64, error) {
 		}
 		g.machineID = machineID
 		g.machineReady = true
-		// 设置过期时间（20分钟）
-		_ = g.machineIDProvider.SetMachineIDExpiration(ctx, machineID, 20*time.Minute)
+		_ = g.machineIDProvider.SetMachineIDExpiration(ctx, machineID, g.leaseDuration)
 	}
 
 	// 计算当前已过时间（10ms单位）
@@ -239,6 +319,13 @@ func (g *Generator) nextID(ctx context.Context) (uint64, error) {
 		uint64(g.businessType)<<(SnowflakeMachineShift+SnowflakeSequenceBits) |
 		uint64(g.machineID)<<SnowflakeSequenceBits |
 		uint64(g.sequence), nil
+}
+
+func nextLeaseRenewTime(now time.Time, leaseDuration time.Duration) time.Time {
+	if leaseDuration <= 0 {
+		return now
+	}
+	return now.Add(leaseDuration / 2)
 }
 
 // toShortID 转换为短ID

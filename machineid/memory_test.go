@@ -100,4 +100,3 @@ func TestMemoryMachineIDProvider_OtherMethods(t *testing.T) {
 		t.Errorf("Close() error = %v", err)
 	}
 }
-

@@ -33,6 +33,54 @@ func (p *failMachineIDProvider) Close() error {
 	return nil
 }
 
+type testMachineIDLeaseProvider struct {
+	lease      *MachineIDLease
+	acquireErr error
+	renewErr   error
+	renewOK    bool
+	acquireN   int32
+	renewN     int32
+}
+
+func (p *testMachineIDLeaseProvider) AcquireMachineIDLease(ctx context.Context, ttl time.Duration) (*MachineIDLease, error) {
+	_ = ctx
+	_ = ttl
+	atomic.AddInt32(&p.acquireN, 1)
+	if p.acquireErr != nil {
+		return nil, p.acquireErr
+	}
+	if p.lease == nil {
+		p.lease = &MachineIDLease{MachineID: 7, Token: "t", ExpiresAt: time.Now().Add(ttl)}
+	}
+	return p.lease, nil
+}
+
+func (p *testMachineIDLeaseProvider) RenewMachineIDLease(ctx context.Context, lease *MachineIDLease, ttl time.Duration) (bool, error) {
+	_ = ctx
+	_ = ttl
+	_ = lease
+	atomic.AddInt32(&p.renewN, 1)
+	if p.renewErr != nil {
+		return false, p.renewErr
+	}
+	return p.renewOK, nil
+}
+
+func (p *testMachineIDLeaseProvider) ReleaseMachineIDLease(ctx context.Context, lease *MachineIDLease) error {
+	_ = ctx
+	_ = lease
+	return nil
+}
+
+func (p *testMachineIDLeaseProvider) HealthCheck(ctx context.Context) error {
+	_ = ctx
+	return nil
+}
+
+func (p *testMachineIDLeaseProvider) Close() error {
+	return nil
+}
+
 type failSequenceProvider struct{}
 
 func (p *failSequenceProvider) GetSequence(ctx context.Context, key string) (uint16, error) {
@@ -94,6 +142,25 @@ func TestNewGenerator_WithMachineID(t *testing.T) {
 	}
 }
 
+func TestNew_ConvenienceConstructor(t *testing.T) {
+	g, err := New(1, BusinessOrder)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if g == nil {
+		t.Fatal("New() returned nil")
+	}
+}
+
+func TestMustNew_PanicOnInvalidConfig(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("MustNew() did not panic on invalid input")
+		}
+	}()
+	_ = MustNew(100, BusinessOrder) // invalid machine id
+}
+
 // TestNewGenerator_WithMachineIDProvider 测试Serverless模式
 // 注意：此测试需要 MemoryMachineIDProvider，在实际使用时通过导入子包访问
 func TestNewGenerator_WithMachineIDProvider(t *testing.T) {
@@ -118,6 +185,20 @@ func TestValidateConfig_ConflictingMachineConfig(t *testing.T) {
 		MachineID:         1,
 		MachineIDProvider: &testMachineIDProvider{id: 1},
 		BusinessType:      BusinessOrder,
+	})
+	if err == nil {
+		t.Fatal("ValidateConfig() expected error, got nil")
+	}
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("ValidateConfig() error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestValidateConfig_ConflictingLeaseConfig(t *testing.T) {
+	err := ValidateConfig(Config{
+		MachineIDProvider:      &testMachineIDProvider{id: 1},
+		MachineIDLeaseProvider: &testMachineIDLeaseProvider{},
+		BusinessType:           BusinessOrder,
 	})
 	if err == nil {
 		t.Fatal("ValidateConfig() expected error, got nil")
@@ -294,6 +375,47 @@ func TestGenerator_MachineProviderFailure(t *testing.T) {
 	_, err = generator.NextID(context.Background())
 	if err == nil {
 		t.Fatal("NextID() expected error, got nil")
+	}
+}
+
+func TestGenerator_MachineLeaseProvider_AcquireOnce(t *testing.T) {
+	provider := &testMachineIDLeaseProvider{renewOK: true}
+	generator, err := NewGenerator(Config{
+		MachineIDLeaseProvider: provider,
+		BusinessType:           BusinessOrder,
+		MachineIDLeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		if _, err := generator.NextID(context.Background()); err != nil {
+			t.Fatalf("NextID() error = %v", err)
+		}
+	}
+	if got := atomic.LoadInt32(&provider.acquireN); got != 1 {
+		t.Fatalf("AcquireMachineIDLease() calls = %d, want 1", got)
+	}
+}
+
+func TestGenerator_MachineLeaseProvider_RenewFailure(t *testing.T) {
+	provider := &testMachineIDLeaseProvider{renewOK: false}
+	generator, err := NewGenerator(Config{
+		MachineIDLeaseProvider: provider,
+		BusinessType:           BusinessOrder,
+		MachineIDLeaseDuration: 2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGenerator() error = %v", err)
+	}
+
+	if _, err := generator.NextID(context.Background()); err != nil {
+		t.Fatalf("first NextID() error = %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	if _, err := generator.NextID(context.Background()); !errors.Is(err, ErrMachineIDLeaseLost) {
+		t.Fatalf("second NextID() error = %v, want ErrMachineIDLeaseLost", err)
 	}
 }
 
