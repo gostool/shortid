@@ -20,8 +20,9 @@ shortid/
 │   ├── memory_test.go             # ✅ 序列号提供者测试
 │   └── redis_test.go              # ✅ Redis序列号提供者测试
 │
-├── generator.go                   # ✅ Generator 核心实现
-├── generator_test.go              # ✅ Generator 单元测试
+├── generator.go                   # ✅ Generator 核心实现（ID时间/序列主流程）
+├── generator_machine_runtime.go   # ✅ 机器ID运行时（固定/Provider/租约）
+├── generator_test.go              # ✅ Generator 单元测试（配置/生命周期/并发）
 │
 ├── http_server.go                 # ✅ HTTP服务器实现（提供ID生成API）
 │
@@ -113,7 +114,7 @@ shortid/
 - 实现 `SequenceProvider` 接口的所有方法
 
 ### 6. `generator.go`
-**职责**：Generator 核心实现
+**职责**：Generator 核心实现（时间推进、序列处理、ID组装）
 
 **内容**：
 - `Generator` 结构体
@@ -123,7 +124,15 @@ shortid/
 - `nextID` 方法（Sonyflake算法实现）
 - `toShortID` 方法（短ID转换）
 
-### 7. `http_server.go`
+### 7. `generator_machine_runtime.go`
+**职责**：机器ID运行时管理（从 `nextID` 中解耦）
+
+**内容**：
+- `ensureMachineIdentity` 统一入口
+- `ensureMachineLease` 租约获取与续租
+- `ensureMachineProvider` 兼容旧 `MachineIDProvider` 延迟初始化
+
+### 8. `http_server.go`
 **职责**：HTTP服务器实现，提供ID生成API
 
 **内容**：
@@ -137,7 +146,7 @@ shortid/
 - `IDResponse` - ID生成响应结构
 - Redis提供者实现（`redisMachineIDProviderImpl`, `redisSequenceProviderImpl`）
 
-### 8. `errors.go`
+### 9. `errors.go`
 **职责**：错误定义
 
 **内容**：
@@ -146,7 +155,7 @@ shortid/
 - `ErrInvalidMachineID` - 无效机器ID错误
 - `ErrInvalidSequence` - 无效序列号错误
 
-### 9. 测试文件
+### 10. 测试文件
 
 #### 单元测试
 - `generator_test.go` - Generator 核心功能测试
@@ -174,7 +183,7 @@ shortid/
   - `TestSDK_HTTPRedis_Concurrent` - 并发HTTP请求测试
   - `TestSDK_HTTPRedis_MethodNotAllowed` - 方法限制测试
 
-### 10. 示例和脚本
+### 11. 示例和脚本
 
 - `example_http/main.go` - HTTP服务器启动示例
 - `test.sh` - 单元测试脚本
@@ -193,7 +202,7 @@ shortid/
 - ✅ `RedisMachineIDProvider` 实现（`machineid/redis.go`）
 - ✅ `MemorySequenceProvider` 实现（`sequence/memory.go`）
 - ✅ `RedisSequenceProvider` 实现（`sequence/redis.go`）
-- ✅ `Generator` 核心实现（`generator.go`）
+- ✅ `Generator` 核心实现（`generator.go` + `generator_machine_runtime.go`）
   - ✅ 支持固定机器ID模式
   - ✅ 支持Serverless模式（动态机器ID）
   - ✅ 支持本地序列号模式

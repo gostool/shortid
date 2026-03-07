@@ -234,48 +234,13 @@ func (g *Generator) nextID(ctx context.Context) (uint64, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// 租约模式：首次申请租约，后续按计划续租
-	if g.useMachineLeaseProvider {
-		if !g.machineReady {
-			lease, err := g.machineIDLeaseProvider.AcquireMachineIDLease(ctx, g.leaseDuration)
-			if err != nil {
-				return 0, fmt.Errorf("failed to acquire machine id lease: %w", err)
-			}
-			if lease == nil {
-				return 0, ErrMachineIDLeaseUnavailable
-			}
-			g.machineID = lease.MachineID
-			g.machineLease = lease
-			g.machineReady = true
-			g.leaseRenewAt = nextLeaseRenewTime(time.Now(), g.leaseDuration)
-		} else if time.Now().After(g.leaseRenewAt) {
-			ok, err := g.machineIDLeaseProvider.RenewMachineIDLease(ctx, g.machineLease, g.leaseDuration)
-			if err != nil {
-				return 0, fmt.Errorf("failed to renew machine id lease: %w", err)
-			}
-			if !ok {
-				return 0, ErrMachineIDLeaseLost
-			}
-			if g.machineLease != nil {
-				g.machineLease.ExpiresAt = time.Now().Add(g.leaseDuration)
-			}
-			g.leaseRenewAt = nextLeaseRenewTime(time.Now(), g.leaseDuration)
-		}
-	}
-
-	// 兼容旧Serverless模式：首次在锁内获取机器ID，避免并发初始化竞态
-	if g.useMachineProvider && !g.machineReady {
-		machineID, err := g.machineIDProvider.GetMachineID(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("failed to get machine id: %w", err)
-		}
-		g.machineID = machineID
-		g.machineReady = true
-		_ = g.machineIDProvider.SetMachineIDExpiration(ctx, machineID, g.leaseDuration)
+	nowTime := time.Now()
+	if err := g.ensureMachineIdentity(ctx, nowTime); err != nil {
+		return 0, err
 	}
 
 	// 计算当前已过时间（10ms单位）
-	now := time.Now().UnixMilli() / timeUnit
+	now := nowTime.UnixMilli() / timeUnit
 	current := now - g.startTime
 
 	if g.elapsedTime < current {

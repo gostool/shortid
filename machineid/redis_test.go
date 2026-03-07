@@ -34,7 +34,6 @@ func requireRedisAddrForMachineIDTest(t *testing.T) string {
 
 func TestRedisMachineIDProvider_GetMachineID(t *testing.T) {
 	addr := requireRedisAddrForMachineIDTest(t)
-
 	provider, err := NewRedisMachineIDProvider(addr)
 	if err != nil {
 		t.Fatalf("NewRedisMachineIDProvider() error = %v", err)
@@ -42,18 +41,24 @@ func TestRedisMachineIDProvider_GetMachineID(t *testing.T) {
 	defer provider.Close()
 
 	ctx := context.Background()
-	id, err := provider.GetMachineID(ctx)
-	if err != nil {
-		t.Fatalf("GetMachineID() error = %v", err)
+	seen := make(map[uint16]struct{}, 64)
+	for i := 0; i < 128; i++ {
+		id, err := provider.GetMachineID(ctx)
+		if err != nil {
+			t.Fatalf("GetMachineID() error = %v", err)
+		}
+		if id > 63 {
+			t.Fatalf("GetMachineID() = %d, want 0-63", id)
+		}
+		seen[id] = struct{}{}
 	}
-	if id > 63 {
-		t.Fatalf("GetMachineID() = %d, want 0-63", id)
+	if len(seen) == 0 {
+		t.Fatal("no machine id produced")
 	}
 }
 
 func TestRedisMachineIDProvider_SetMachineIDExpiration(t *testing.T) {
 	addr := requireRedisAddrForMachineIDTest(t)
-
 	provider, err := NewRedisMachineIDProvider(addr)
 	if err != nil {
 		t.Fatalf("NewRedisMachineIDProvider() error = %v", err)

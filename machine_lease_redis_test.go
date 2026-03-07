@@ -15,6 +15,7 @@ func TestRedisMachineIDLeaseProvider_TokenCAS(t *testing.T) {
 		t.Fatalf("NewRedisMachineIDLeaseProvider() error = %v", err)
 	}
 	defer p1.Close()
+
 	p2, err := NewRedisMachineIDLeaseProvider(redisAddr)
 	if err != nil {
 		t.Fatalf("NewRedisMachineIDLeaseProvider() error = %v", err)
@@ -52,7 +53,7 @@ func TestRedisMachineIDLeaseProvider_TokenCAS(t *testing.T) {
 
 func TestRedisMachineIDLeaseProvider_ConfigurableSlots(t *testing.T) {
 	redisAddr := requireRedisForSDKTest(t)
-	p, err := NewRedisMachineIDLeaseProviderWithConfig(redisAddr, RedisMachineIDLeaseOptions{
+	provider, err := NewRedisMachineIDLeaseProviderWithConfig(redisAddr, RedisMachineIDLeaseOptions{
 		Slots:          8,
 		CursorKey:      "shortid:test:lease:cursor",
 		LeaseKeyPrefix: "shortid:test:lease:",
@@ -60,27 +61,42 @@ func TestRedisMachineIDLeaseProvider_ConfigurableSlots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRedisMachineIDLeaseProviderWithConfig() error = %v", err)
 	}
-	defer p.Close()
+	defer provider.Close()
 
-	lease, err := p.AcquireMachineIDLease(context.Background(), time.Second)
-	if err != nil {
-		t.Fatalf("AcquireMachineIDLease() error = %v", err)
+	ctx := context.Background()
+	leases := make([]*MachineIDLease, 0, 8)
+	for i := 0; i < 8; i++ {
+		lease, err := provider.AcquireMachineIDLease(ctx, 10*time.Second)
+		if err != nil {
+			t.Fatalf("AcquireMachineIDLease() #%d error = %v", i, err)
+		}
+		if lease.MachineID >= 8 {
+			t.Fatalf("MachineID = %d, want < 8", lease.MachineID)
+		}
+		leases = append(leases, lease)
 	}
-	if lease.MachineID >= 8 {
-		t.Fatalf("MachineID = %d, want < 8", lease.MachineID)
+
+	if _, err := provider.AcquireMachineIDLease(ctx, 10*time.Second); err == nil {
+		t.Fatal("AcquireMachineIDLease() expected unavailable error when slots exhausted")
+	}
+
+	for _, lease := range leases {
+		if releaseErr := provider.ReleaseMachineIDLease(ctx, lease); releaseErr != nil {
+			t.Fatalf("ReleaseMachineIDLease() error = %v", releaseErr)
+		}
 	}
 }
 
 func TestPerf_RedisLeaseMode_SingleInstance(t *testing.T) {
 	redisAddr := requireRedisForSDKTest(t)
-	leaseProvider, err := NewRedisMachineIDLeaseProvider(redisAddr)
+	provider, err := NewRedisMachineIDLeaseProvider(redisAddr)
 	if err != nil {
 		t.Fatalf("NewRedisMachineIDLeaseProvider() error = %v", err)
 	}
-	defer leaseProvider.Close()
+	defer provider.Close()
 
 	g, err := NewGenerator(Config{
-		MachineIDLeaseProvider: leaseProvider,
+		MachineIDLeaseProvider: provider,
 		BusinessType:           BusinessOrder,
 		MachineIDLeaseDuration: time.Minute,
 	})
@@ -89,20 +105,7 @@ func TestPerf_RedisLeaseMode_SingleInstance(t *testing.T) {
 	}
 
 	const count = 50000
-	idMap := make(map[uint64]struct{}, count)
-	ctx := context.Background()
-	start := time.Now()
-	for i := 0; i < count; i++ {
-		id, genErr := g.NextID(ctx)
-		if genErr != nil {
-			t.Fatalf("NextID() error = %v", genErr)
-		}
-		if _, ok := idMap[id]; ok {
-			t.Fatalf("duplicate id at %d: %d", i, id)
-		}
-		idMap[id] = struct{}{}
-	}
-	duration := time.Since(start)
+	duration := runLeasePerfLoad(t, []*Generator{g}, count)
 	t.Logf("[single-instance] count=%d duration=%v avg=%v qps=%.0f",
 		count, duration, duration/time.Duration(count), float64(count)/duration.Seconds())
 }
@@ -114,6 +117,7 @@ func TestPerf_RedisLeaseMode_TwoInstances(t *testing.T) {
 		t.Fatalf("NewRedisMachineIDLeaseProvider() error = %v", err)
 	}
 	defer p1.Close()
+
 	p2, err := NewRedisMachineIDLeaseProvider(redisAddr)
 	if err != nil {
 		t.Fatalf("NewRedisMachineIDLeaseProvider() error = %v", err)
@@ -128,6 +132,7 @@ func TestPerf_RedisLeaseMode_TwoInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenerator(g1) error = %v", err)
 	}
+
 	g2, err := NewGenerator(Config{
 		MachineIDLeaseProvider: p2,
 		BusinessType:           BusinessOrder,
@@ -138,40 +143,47 @@ func TestPerf_RedisLeaseMode_TwoInstances(t *testing.T) {
 	}
 
 	const each = 30000
-	var mu sync.Mutex
-	idMap := make(map[uint64]struct{}, each*2)
-	errCh := make(chan error, 2)
+	duration := runLeasePerfLoad(t, []*Generator{g1, g2}, each)
+	total := each * 2
+	t.Logf("[two-instances] total=%d duration=%v avg=%v qps=%.0f",
+		total, duration, duration/time.Duration(total), float64(total)/duration.Seconds())
+}
+
+func runLeasePerfLoad(t *testing.T, generators []*Generator, each int) time.Duration {
+	t.Helper()
+
 	start := time.Now()
+	errCh := make(chan error, len(generators))
+	seen := make(map[uint64]struct{}, each*len(generators))
+	var mu sync.Mutex
 
 	run := func(g *Generator) {
 		ctx := context.Background()
 		for i := 0; i < each; i++ {
-			id, genErr := g.NextID(ctx)
-			if genErr != nil {
-				errCh <- genErr
+			id, err := g.NextID(ctx)
+			if err != nil {
+				errCh <- err
 				return
 			}
 			mu.Lock()
-			if _, ok := idMap[id]; ok {
+			if _, exists := seen[id]; exists {
 				mu.Unlock()
 				errCh <- fmt.Errorf("duplicate id detected: %d", id)
 				return
 			}
-			idMap[id] = struct{}{}
+			seen[id] = struct{}{}
 			mu.Unlock()
 		}
 		errCh <- nil
 	}
 
-	go run(g1)
-	go run(g2)
-	for i := 0; i < 2; i++ {
-		if runErr := <-errCh; runErr != nil {
-			t.Fatalf("concurrent run error: %v", runErr)
+	for _, g := range generators {
+		go run(g)
+	}
+	for i := 0; i < len(generators); i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("runLeasePerfLoad() error: %v", err)
 		}
 	}
-	duration := time.Since(start)
-	total := each * 2
-	t.Logf("[two-instances] total=%d duration=%v avg=%v qps=%.0f",
-		total, duration, duration/time.Duration(total), float64(total)/duration.Seconds())
+	return time.Since(start)
 }
