@@ -8,6 +8,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const redisMachineIDCounterKey = "shortid:machine:id"
+
 // ============================================================================
 // RedisMachineIDProvider Redis 实现（生产用）
 // ============================================================================
@@ -91,7 +93,7 @@ func NewRedisMachineIDProviderWithOptions(opts *redis.Options) (*RedisMachineIDP
 //   - error: 如果操作失败，返回错误
 func (r *RedisMachineIDProvider) GetMachineID(ctx context.Context) (uint16, error) {
 	// 使用 Redis INCR 原子递增
-	val, err := r.client.Incr(ctx, "shortid:machine:id").Result()
+	val, err := r.client.Incr(ctx, redisMachineIDCounterKey).Result()
 	if err != nil {
 		return 0, fmt.Errorf("failed to increment machine id counter: %w", err)
 	}
@@ -113,8 +115,9 @@ func (r *RedisMachineIDProvider) GetMachineID(ctx context.Context) (uint16, erro
 // 返回：
 //   - error: 如果操作失败，返回错误
 func (r *RedisMachineIDProvider) SetMachineIDExpiration(ctx context.Context, machineID uint16, expiration time.Duration) error {
-	key := fmt.Sprintf("shortid:machine:id:%d", machineID)
-	return r.client.Expire(ctx, key, expiration).Err()
+	// 当前实现使用全局计数器分配机器ID，因此设置计数器键过期时间。
+	_ = machineID
+	return r.client.Expire(ctx, redisMachineIDCounterKey, expiration).Err()
 }
 
 // HealthCheck 健康检查
@@ -139,4 +142,3 @@ func (r *RedisMachineIDProvider) HealthCheck(ctx context.Context) error {
 func (r *RedisMachineIDProvider) Close() error {
 	return r.client.Close()
 }
-

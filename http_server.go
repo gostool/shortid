@@ -12,7 +12,13 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// HTTPServer HTTP服务器，提供ID生成API
+const httpRedisMachineIDCounterKey = "shortid:machine:id"
+
+// HTTPServer HTTP服务器，提供ID生成API。
+//
+// Deprecated: HTTP server helpers are kept for backward compatibility.
+// For new projects, prefer using shortid as a pure SDK and build transport
+// layers (HTTP/gRPC) in application code.
 type HTTPServer struct {
 	generator *Generator
 	server    *http.Server
@@ -76,7 +82,10 @@ type IDResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// NewHTTPServer 创建HTTP服务器
+// NewHTTPServer 创建HTTP服务器。
+//
+// Deprecated: use the core SDK (`Generator`) directly and keep transport
+// implementation in your service layer.
 //
 // 参数：
 //   - addr: 服务器地址，例如 ":8080"
@@ -122,6 +131,7 @@ func NewHTTPServer(addr, redisAddr string, businessType BusinessType) (*HTTPServ
 			return nil, fmt.Errorf("failed to get machine id on startup: %w", err)
 		}
 		generator.machineID = machineID
+		generator.machineReady = true
 		// 设置过期时间（20分钟）
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = machineProvider.SetMachineIDExpiration(ctx2, machineID, 20*time.Minute)
@@ -402,7 +412,7 @@ type redisMachineIDProviderImpl struct {
 }
 
 func (r *redisMachineIDProviderImpl) GetMachineID(ctx context.Context) (uint16, error) {
-	result, err := r.client.Incr(ctx, "shortid:machine:id").Result()
+	result, err := r.client.Incr(ctx, httpRedisMachineIDCounterKey).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -410,7 +420,8 @@ func (r *redisMachineIDProviderImpl) GetMachineID(ctx context.Context) (uint16, 
 }
 
 func (r *redisMachineIDProviderImpl) SetMachineIDExpiration(ctx context.Context, machineID uint16, expiration time.Duration) error {
-	return r.client.Expire(ctx, "shortid:machine:id", expiration).Err()
+	_ = machineID
+	return r.client.Expire(ctx, httpRedisMachineIDCounterKey, expiration).Err()
 }
 
 func (r *redisMachineIDProviderImpl) HealthCheck(ctx context.Context) error {

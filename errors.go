@@ -22,5 +22,8 @@ var (
 	// ErrInvalidBusinessType 无效业务类型错误
 	// 当业务类型超出有效范围（0-255）时，返回此错误
 	ErrInvalidBusinessType = errors.New("invalid business type")
-)
 
+	// ErrInvalidConfig 无效配置错误
+	// 当生成器配置字段组合非法时返回此错误
+	ErrInvalidConfig = errors.New("invalid generator config")
+)

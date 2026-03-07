@@ -20,6 +20,7 @@ type Generator struct {
 	elapsedTime  int64  // 已过时间（10ms单位）
 	sequence     uint16 // 序列号
 	machineID    uint16 // 机器ID
+	machineReady bool   // machineID是否已初始化
 	businessType uint8  // 业务类型
 
 	// Serverless模式
@@ -60,6 +61,24 @@ type Config struct {
 	ReturnRawID bool
 }
 
+// ValidateConfig 验证生成器配置是否合法。
+//
+// 兼容策略：
+//   - 该函数只做参数与组合校验，不做外部依赖探测。
+//   - NewGenerator 会调用该函数，建议调用方在启动阶段显式调用以提前失败。
+func ValidateConfig(config Config) error {
+	if config.BusinessType > BusinessReservedZ {
+		return ErrInvalidBusinessType
+	}
+	if config.MachineID > SnowflakeMaxMachine {
+		return ErrInvalidMachineID
+	}
+	if config.MachineIDProvider != nil && config.MachineID != 0 {
+		return fmt.Errorf("%w: MachineID and MachineIDProvider are mutually exclusive", ErrInvalidConfig)
+	}
+	return nil
+}
+
 // NewGenerator 创建ID生成器
 //
 // 参数：
@@ -69,15 +88,14 @@ type Config struct {
 //   - *Generator: ID生成器实例
 //   - error: 如果配置无效，返回错误
 func NewGenerator(config Config) (*Generator, error) {
+	if err := ValidateConfig(config); err != nil {
+		return nil, err
+	}
+
 	g := &Generator{
 		businessType: uint8(config.BusinessType),
 		sequence:     SnowflakeMaxSequence, // 初始化为最大值，首次生成时重置为0
 		returnRawID:  config.ReturnRawID,   // 设置输出格式
-	}
-
-	// 验证业务类型
-	if config.BusinessType > BusinessReservedZ {
-		return nil, ErrInvalidBusinessType
 	}
 
 	// 设置基准时间
@@ -91,12 +109,10 @@ func NewGenerator(config Config) (*Generator, error) {
 	if config.MachineIDProvider != nil {
 		g.machineIDProvider = config.MachineIDProvider
 		g.useMachineProvider = true
-		// 延迟获取机器ID（首次生成时获取）
+		g.machineReady = false // 延迟获取机器ID（首次生成时获取）
 	} else {
-		if config.MachineID > SnowflakeMaxMachine {
-			return nil, ErrInvalidMachineID
-		}
 		g.machineID = config.MachineID
+		g.machineReady = true
 		g.useMachineProvider = false
 	}
 
@@ -129,17 +145,6 @@ func (g *Generator) Generate() (string, error) {
 //   - string: ID字符串（短ID或数字ID字符串）
 //   - error: 如果生成失败，返回错误
 func (g *Generator) GenerateWithContext(ctx context.Context) (string, error) {
-	// Serverless模式：首次获取机器ID
-	if g.useMachineProvider && g.machineID == 0 {
-		machineID, err := g.machineIDProvider.GetMachineID(ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to get machine id: %w", err)
-		}
-		g.machineID = machineID
-		// 设置过期时间（20分钟）
-		_ = g.machineIDProvider.SetMachineIDExpiration(ctx, machineID, 20*time.Minute)
-	}
-
 	// 生成64位数字ID
 	id, err := g.nextID(ctx)
 	if err != nil {
@@ -165,17 +170,6 @@ func (g *Generator) GenerateWithContext(ctx context.Context) (string, error) {
 //   - uint64: 64位数字ID
 //   - error: 如果生成失败，返回错误
 func (g *Generator) NextID(ctx context.Context) (uint64, error) {
-	// Serverless模式：首次获取机器ID
-	if g.useMachineProvider && g.machineID == 0 {
-		machineID, err := g.machineIDProvider.GetMachineID(ctx)
-		if err != nil {
-			return 0, fmt.Errorf("failed to get machine id: %w", err)
-		}
-		g.machineID = machineID
-		// 设置过期时间（20分钟）
-		_ = g.machineIDProvider.SetMachineIDExpiration(ctx, machineID, 20*time.Minute)
-	}
-
 	// 生成64位数字ID
 	return g.nextID(ctx)
 }
@@ -187,6 +181,18 @@ func (g *Generator) nextID(ctx context.Context) (uint64, error) {
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	// Serverless模式：首次在锁内获取机器ID，避免并发初始化竞态
+	if g.useMachineProvider && !g.machineReady {
+		machineID, err := g.machineIDProvider.GetMachineID(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get machine id: %w", err)
+		}
+		g.machineID = machineID
+		g.machineReady = true
+		// 设置过期时间（20分钟）
+		_ = g.machineIDProvider.SetMachineIDExpiration(ctx, machineID, 20*time.Minute)
+	}
 
 	// 计算当前已过时间（10ms单位）
 	now := time.Now().UnixMilli() / timeUnit

@@ -11,12 +11,14 @@ shortid/
 ├── machineid/                     # 机器ID提供者模块
 │   ├── memory.go                  # ✅ MemoryMachineIDProvider 实现（测试用）
 │   ├── redis.go                   # ✅ RedisMachineIDProvider 实现（生产用）
-│   └── memory_test.go             # ✅ 机器ID提供者测试
+│   ├── memory_test.go             # ✅ 机器ID提供者测试
+│   └── redis_test.go              # ✅ Redis机器ID提供者测试
 │
 ├── sequence/                      # 序列号提供者模块
 │   ├── memory.go                  # ✅ MemorySequenceProvider 实现（测试用）
 │   ├── redis.go                   # ✅ RedisSequenceProvider 实现（生产用）
-│   └── memory_test.go             # ✅ 序列号提供者测试
+│   ├── memory_test.go             # ✅ 序列号提供者测试
+│   └── redis_test.go              # ✅ Redis序列号提供者测试
 │
 ├── generator.go                   # ✅ Generator 核心实现
 ├── generator_test.go              # ✅ Generator 单元测试
@@ -43,6 +45,7 @@ shortid/
 │
 ├── docs/                          # 文档目录
 │   ├── FILE_STRUCTURE.md          # 文件结构文档（本文件）
+│   ├── MINIMAL_VALIDATION.md      # 最小验证手册
 │   ├── PERFORMANCE_TEST.md        # 性能测试报告
 │   ├── step3:go唯一id.md          # 实现文档
 │   └── ...                        # 其他文档
@@ -150,14 +153,16 @@ shortid/
 - `base_test.go` - Base62编码测试
 - `timestamp_test.go` - 时间戳压缩测试
 - `machineid/memory_test.go` - 内存机器ID提供者测试
+- `machineid/redis_test.go` - Redis机器ID提供者测试
 - `sequence/memory_test.go` - 内存序列号提供者测试
+- `sequence/redis_test.go` - Redis序列号提供者测试
 
 #### SDK集成测试
 - `sdk_single_mem_test.go` - 单机内存模式SDK测试
   - `TestSDK_SingleMemory_ShortID` - 测试短ID生成
   - `TestSDK_SingleMemory_UID` - 测试原始数字ID生成
   - `TestSDK_SingleMemory_NextID` - 测试NextID方法
-- `sdk_single_redis_test.go` - 单机Redis模式SDK测试（待实现）
+- `sdk_single_redis_test.go` - 单机Redis模式SDK测试
 - `sdk_serverless_redis_test.go` - Serverless Redis模式SDK测试
   - `TestSDK_ServerlessRedis_ShortID` - 完整Serverless模式（Redis机器ID+Redis序列号）
   - `TestSDK_ServerlessRedis_NextID` - 完整Serverless模式生成原始ID
@@ -208,17 +213,17 @@ shortid/
 - ✅ Base62编码测试
 - ✅ 时间戳压缩测试
 - ✅ 内存Provider测试
+- ✅ Redis Provider测试
 - ✅ SDK集成测试（单机内存、Serverless Redis、HTTP服务）
 
 #### 文档
 - ✅ 文件结构文档（本文件）
+- ✅ 最小验证手册（`MINIMAL_VALIDATION.md`）
 - ✅ 性能测试报告（`PERFORMANCE_TEST.md`）
 - ✅ 实现文档（`step3:go唯一id.md`）
 
 ### 待实现的功能
 
-- ⏳ `sdk_single_redis_test.go` - 单机Redis模式测试
-- ⏳ Redis Provider的单元测试（`machineid/redis_test.go`, `sequence/redis_test.go`）
 - ⏳ HTTP服务的更多测试场景
 
 ## 📦 包结构
@@ -290,4 +295,3 @@ id, _ := generator.GenerateWithContext(ctx)
 server, _ := shortid.NewHTTPServer(":8080", "localhost:6379", shortid.BusinessOrder)
 server.Start()
 ```
-
