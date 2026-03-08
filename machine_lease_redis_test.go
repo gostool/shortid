@@ -149,6 +149,62 @@ func TestPerf_RedisLeaseMode_TwoInstances(t *testing.T) {
 		total, duration, duration/time.Duration(total), float64(total)/duration.Seconds())
 }
 
+func TestPerf_RedisLeaseMode_MultiInstances(t *testing.T) {
+	redisAddr := requireRedisForSDKTest(t)
+
+	tests := []struct {
+		name      string
+		instances int
+		each      int
+	}{
+		{name: "16_instances", instances: 16, each: 5000},
+		{name: "32_instances", instances: 32, each: 3000},
+		{name: "64_instances", instances: 64, each: 1500},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgID := fmt.Sprintf("%d-%d", tt.instances, time.Now().UnixNano())
+			cursorKey := "shortid:test:lease:multi:cursor:" + cfgID
+			prefix := "shortid:test:lease:multi:key:" + cfgID + ":"
+
+			providers := make([]*RedisMachineIDLeaseProvider, 0, tt.instances)
+			generators := make([]*Generator, 0, tt.instances)
+			for i := 0; i < tt.instances; i++ {
+				p, err := NewRedisMachineIDLeaseProviderWithConfig(redisAddr, RedisMachineIDLeaseOptions{
+					Slots:          64,
+					CursorKey:      cursorKey,
+					LeaseKeyPrefix: prefix,
+				})
+				if err != nil {
+					t.Fatalf("NewRedisMachineIDLeaseProviderWithConfig() #%d error = %v", i, err)
+				}
+				providers = append(providers, p)
+
+				g, err := NewGenerator(Config{
+					MachineIDLeaseProvider: p,
+					BusinessType:           BusinessOrder,
+					MachineIDLeaseDuration: time.Minute,
+				})
+				if err != nil {
+					t.Fatalf("NewGenerator() #%d error = %v", i, err)
+				}
+				generators = append(generators, g)
+			}
+			defer func() {
+				for _, p := range providers {
+					_ = p.Close()
+				}
+			}()
+
+			duration := runLeasePerfLoad(t, generators, tt.each)
+			total := tt.instances * tt.each
+			t.Logf("[multi-instances] instances=%d total=%d duration=%v avg=%v qps=%.0f",
+				tt.instances, total, duration, duration/time.Duration(total), float64(total)/duration.Seconds())
+		})
+	}
+}
+
 func runLeasePerfLoad(t *testing.T, generators []*Generator, each int) time.Duration {
 	t.Helper()
 

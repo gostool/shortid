@@ -81,21 +81,31 @@ flowchart LR
 测试命令：
 
 ```bash
-go test -run TestPerf_RedisLeaseMode -v ./...
+go test -run 'TestPerf_RedisLeaseMode_(SingleInstance|TwoInstances|MultiInstances)$' -v ./...
 ```
 
-测试环境：
+测试环境（真实本机实测）：
 
-- Redis：本地 Docker 单实例
+- 时间：2026-03-08 21:13 CST
+- 机器：MacBook Pro (MacBookPro18,3)
+- CPU：Apple M1 Pro，8 Core (6P + 2E)
+- 内存：16 GB
+- 系统：macOS 15.6 (Darwin 24.6.0, arm64)
+- Redis：本地 Docker 单实例（`localhost:6379`）
 - 模式：`MachineIDLeaseProvider`（Lua Acquire）+ 本地序列号
-- 日期：2026-03-07
 
 | 场景 | 请求量 | 总耗时 | 平均耗时 | QPS |
 |---|---:|---:|---:|---:|
-| 单实例（1个Generator） | 50,000 | 4.317s | 86.35µs | 11,581 |
-| 双实例（2个Generator并发） | 60,000 | 2.592s | 43.211µs | 23,142 |
+| 单实例（1个Generator） | 50,000 | 4.274s | 85.472µs | 11,700 |
+| 双实例（2个Generator并发） | 60,000 | 2.576s | 42.935µs | 23,291 |
+| 16实例并发 | 80,000 | 0.456s | 5.705µs | 175,277 |
+| 32实例并发 | 96,000 | 0.261s | 2.713µs | 368,488 |
+| 64实例并发 | 96,000 | 0.124s | 1.291µs | 774,330 |
 
-说明：双实例吞吐提升来自并行扩展，建议线上按目标拓扑做压测复核。
+说明：
+- 上述数据来自当前机器实测日志（`go test -v` 输出），非理论估算。
+- 16/32/64 场景主要反映“并行扩展能力”，不等同于线上端到端吞吐。
+- 线上请按目标实例规格、网络与Redis拓扑复测。
 
 ## 7. 快速开始
 
