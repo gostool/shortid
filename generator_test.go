@@ -2,825 +2,565 @@ package shortid
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// 测试生产短码并解码
-func TestGenerator_GenerateID_ShortID(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
+type stubMachineIDProvider struct {
+	id       uint16
+	getErr   error
+	getCalls int32
+	expCalls int32
+}
+
+func (p *stubMachineIDProvider) GetMachineID(ctx context.Context) (uint16, error) {
+	_ = ctx
+	atomic.AddInt32(&p.getCalls, 1)
+	if p.getErr != nil {
+		return 0, p.getErr
 	}
-	ctx := context.Background()
+	return p.id, nil
+}
 
-	precisionErrors := 0
-	maxDiff := uint64(0)
+func (p *stubMachineIDProvider) SetMachineIDExpiration(ctx context.Context, machineID uint16, expiration time.Duration) error {
+	_ = ctx
+	_ = machineID
+	_ = expiration
+	atomic.AddInt32(&p.expCalls, 1)
+	return nil
+}
 
-	for i := 0; i < 100; i++ {
-		id, b62Str, err := generator.GenerateID(ctx)
+func (p *stubMachineIDProvider) HealthCheck(ctx context.Context) error {
+	_ = ctx
+	return nil
+}
+
+func (p *stubMachineIDProvider) Close() error {
+	return nil
+}
+
+type stubMachineIDLeaseProvider struct {
+	mu            sync.Mutex
+	lease         *MachineIDLease
+	acquireErr    error
+	renewErr      error
+	renewOK       bool
+	acquireCalled int32
+	renewCalled   int32
+}
+
+func (p *stubMachineIDLeaseProvider) AcquireMachineIDLease(ctx context.Context, ttl time.Duration) (*MachineIDLease, error) {
+	_ = ctx
+	atomic.AddInt32(&p.acquireCalled, 1)
+	if p.acquireErr != nil {
+		return nil, p.acquireErr
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lease == nil {
+		p.lease = &MachineIDLease{MachineID: 7, Token: "lease-token", ExpiresAt: time.Now().Add(ttl)}
+	}
+	return p.lease, nil
+}
+
+func (p *stubMachineIDLeaseProvider) RenewMachineIDLease(ctx context.Context, lease *MachineIDLease, ttl time.Duration) (bool, error) {
+	_ = ctx
+	_ = lease
+	_ = ttl
+	atomic.AddInt32(&p.renewCalled, 1)
+	if p.renewErr != nil {
+		return false, p.renewErr
+	}
+	return p.renewOK, nil
+}
+
+func (p *stubMachineIDLeaseProvider) ReleaseMachineIDLease(ctx context.Context, lease *MachineIDLease) error {
+	_ = ctx
+	_ = lease
+	return nil
+}
+
+func (p *stubMachineIDLeaseProvider) HealthCheck(ctx context.Context) error {
+	_ = ctx
+	return nil
+}
+
+func (p *stubMachineIDLeaseProvider) Close() error {
+	return nil
+}
+
+type failSequenceProvider struct{}
+
+func (p *failSequenceProvider) GetSequence(ctx context.Context, key string) (uint16, error) {
+	_ = ctx
+	_ = key
+	return 0, errors.New("sequence provider unavailable")
+}
+
+func (p *failSequenceProvider) SetSequenceExpiration(ctx context.Context, key string, expiration time.Duration) error {
+	_ = ctx
+	_ = key
+	_ = expiration
+	return nil
+}
+
+func (p *failSequenceProvider) HealthCheck(ctx context.Context) error {
+	_ = ctx
+	return nil
+}
+
+func (p *failSequenceProvider) Close() error {
+	return nil
+}
+
+func TestValidateConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		err  error
+	}{
+		{
+			name: "invalid business type",
+			cfg: Config{
+				MachineID:    1,
+				BusinessType: BusinessType(BusinessReservedZ + 1),
+			},
+			err: ErrInvalidBusinessType,
+		},
+		{
+			name: "invalid machine id",
+			cfg: Config{
+				MachineID:    100,
+				BusinessType: BusinessOrder,
+			},
+			err: ErrInvalidMachineID,
+		},
+		{
+			name: "conflict machine and provider",
+			cfg: Config{
+				MachineID:         1,
+				MachineIDProvider: &stubMachineIDProvider{id: 1},
+				BusinessType:      BusinessOrder,
+			},
+			err: ErrInvalidConfig,
+		},
+		{
+			name: "conflict provider and lease provider",
+			cfg: Config{
+				MachineIDProvider:      &stubMachineIDProvider{id: 1},
+				MachineIDLeaseProvider: &stubMachineIDLeaseProvider{renewOK: true},
+				BusinessType:           BusinessOrder,
+			},
+			err: ErrInvalidConfig,
+		},
+		{
+			name: "negative lease duration",
+			cfg: Config{
+				MachineIDLeaseProvider: &stubMachineIDLeaseProvider{renewOK: true},
+				BusinessType:           BusinessOrder,
+				MachineIDLeaseDuration: -time.Second,
+			},
+			err: ErrInvalidConfig,
+		},
+		{
+			name: "valid fixed machine config",
+			cfg: Config{
+				MachineID:    1,
+				BusinessType: BusinessOrder,
+			},
+			err: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(tt.cfg)
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("ValidateConfig() error = %v, want %v", err, tt.err)
+			}
+		})
+	}
+}
+
+func TestConstructorHelpers(t *testing.T) {
+	t.Run("new convenience constructor", func(t *testing.T) {
+		g, err := New(1, BusinessOrder)
 		if err != nil {
-			t.Fatalf("GenerateID() error = %v", err)
+			t.Fatalf("New() error = %v", err)
 		}
+		if g == nil {
+			t.Fatal("New() returned nil")
+		}
+	})
 
-		decoded, err := DecodeBase62ToUint(b62Str)
+	t.Run("must new panic on invalid config", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("MustNew() did not panic on invalid input")
+			}
+		}()
+		_ = MustNew(100, BusinessOrder)
+	})
+}
+
+func TestNewGenerator_Modes(t *testing.T) {
+	t.Run("fixed machine id", func(t *testing.T) {
+		g, err := NewGenerator(Config{MachineID: 3, BusinessType: BusinessOrder})
 		if err != nil {
-			t.Fatalf("DecodeBase62ToUint() error = %v", err)
+			t.Fatalf("NewGenerator() error = %v", err)
 		}
-
-		diff := id - decoded
-		if diff > maxDiff {
-			maxDiff = diff
+		if !g.machineReady {
+			t.Fatal("machineReady = false, want true")
 		}
-
-		if id != decoded {
-			precisionErrors++
-			t.Errorf("精度丢失: id=%d, b62Str=%s, decoded=%d, diff=%d", id, b62Str, decoded, diff)
+		if g.machineID != 3 {
+			t.Fatalf("machineID = %d, want 3", g.machineID)
 		}
-	}
-
-	if precisionErrors > 0 {
-		t.Errorf("发现 %d 个精度丢失问题，最大差值: %d", precisionErrors, maxDiff)
-	} else {
-		t.Logf("✓ 测试通过: 生成 100 个ID，无精度丢失")
-	}
-}
-
-// 测试 GenerateIDBatchWithContext
-
-func TestGenerator_GenerateIDBatchWithContext(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-	ctx := context.Background()
-	result, err := generator.GenerateIDBatchWithContext(ctx, 100)
-	if err != nil {
-		t.Fatalf("GenerateIDBatchWithContext() error = %v", err)
-	}
-	if len(result) != 100 {
-		t.Errorf("GenerateIDBatchWithContext() returned %d IDs, want 100", len(result))
-	}
-	// 验证每个ID都有对应的Base62编码
-	for id, b62Str := range result {
-		if b62Str == "" {
-			t.Errorf("GenerateIDBatchWithContext() returned empty Base62 string for ID %d", id)
+		if g.useMachineProvider || g.useMachineLeaseProvider {
+			t.Fatal("fixed mode should not enable providers")
 		}
-		t.Logf("id: %d, b62Str: %s", id, b62Str)
-	}
-}
-
-// TestGenerator_GenerateID 测试GenerateID方法
-func TestGenerator_GenerateID(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
 	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-	ctx := context.Background()
-	id, b62Str, err := generator.GenerateID(ctx)
-	if err != nil {
-		t.Fatalf("GenerateID() error = %v", err)
-	}
-	t.Logf("id: %d, b62Str: %s", id, b62Str)
-}
 
-func TestNewGenerator_WithMachineID(t *testing.T) {
-	// 测试固定机器ID模式
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
+	t.Run("legacy machine provider lazy init", func(t *testing.T) {
+		provider := &stubMachineIDProvider{id: 5}
+		g, err := NewGenerator(Config{MachineIDProvider: provider, BusinessType: BusinessOrder})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
+		if g.machineReady {
+			t.Fatal("machineReady = true, want false")
+		}
+		if !g.useMachineProvider {
+			t.Fatal("useMachineProvider = false, want true")
+		}
 	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-	if generator == nil {
-		t.Fatal("NewGenerator() returned nil")
-	}
 
-	// 验证配置
-	if generator.machineID != 1 {
-		t.Errorf("machineID = %d, want 1", generator.machineID)
-	}
-	if generator.businessType != uint8(BusinessOrder) {
-		t.Errorf("businessType = %d, want %d", generator.businessType, BusinessOrder)
-	}
-	if generator.useMachineProvider {
-		t.Error("useMachineProvider = true, want false")
-	}
-}
-
-// TestNewGenerator_WithMachineIDProvider 测试Serverless模式
-// 注意：此测试需要 MemoryMachineIDProvider，在实际使用时通过导入子包访问
-func TestNewGenerator_WithMachineIDProvider(t *testing.T) {
-	// 跳过此测试，因为需要子目录中的类型
-	// 在实际集成测试中可以使用
-	t.Skip("Skipping test that requires subdirectory types")
-}
-
-func TestNewGenerator_InvalidMachineID(t *testing.T) {
-	// 测试无效机器ID
-	_, err := NewGenerator(Config{
-		MachineID:    100, // 超出范围（0-63）
-		BusinessType: BusinessOrder,
+	t.Run("lease provider lazy init", func(t *testing.T) {
+		provider := &stubMachineIDLeaseProvider{renewOK: true}
+		g, err := NewGenerator(Config{MachineIDLeaseProvider: provider, BusinessType: BusinessOrder})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
+		if g.machineReady {
+			t.Fatal("machineReady = true, want false")
+		}
+		if !g.useMachineLeaseProvider {
+			t.Fatal("useMachineLeaseProvider = false, want true")
+		}
 	})
-	if err != ErrInvalidMachineID {
-		t.Errorf("NewGenerator() error = %v, want ErrInvalidMachineID", err)
-	}
 }
 
-func TestGenerator_Generate(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
+func TestGenerator_GenerateAndNextID(t *testing.T) {
+	g, err := NewGenerator(Config{MachineID: 1, BusinessType: BusinessOrder})
 	if err != nil {
 		t.Fatalf("NewGenerator() error = %v", err)
 	}
 
-	// 生成ID
-	id1, err := generator.Generate()
+	raw, err := g.NextID(context.Background())
+	if err != nil {
+		t.Fatalf("NextID() error = %v", err)
+	}
+	if raw == 0 {
+		t.Fatal("NextID() returned 0")
+	}
+
+	shortID, err := g.Generate()
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	t.Logf("id1: %s", id1)
-	if id1 == "" {
-		t.Error("Generate() returned empty string")
+	if shortID == "" {
+		t.Fatal("Generate() returned empty string")
 	}
 
-	// 再次生成，应该不同
-	id2, err := generator.Generate()
+	rawStrGen, err := NewGenerator(Config{MachineID: 1, BusinessType: BusinessOrder, ReturnRawID: true})
 	if err != nil {
-		t.Fatalf("Generate() error = %v", err)
+		t.Fatalf("NewGenerator(raw) error = %v", err)
 	}
-	t.Logf("id2: %s", id2)
-	if id2 == "" {
-		t.Error("Generate() returned empty string")
+	rawStr, err := rawStrGen.GenerateWithContext(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateWithContext(raw) error = %v", err)
 	}
-
-	// ID应该不同（至少序列号不同）
-	if id1 == id2 {
-		t.Errorf("Generate() returned same ID: %s", id1)
+	if rawStr == "" {
+		t.Fatal("GenerateWithContext(raw) returned empty string")
+	}
+	if _, parseErr := fmt.Sscanf(rawStr, "%d", new(uint64)); parseErr != nil {
+		t.Fatalf("raw output is not numeric: %q", rawStr)
 	}
 }
 
-func TestGenerator_GenerateWithContext(t *testing.T) {
-	// 测试使用固定机器ID的GenerateWithContext
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
+func TestGenerator_ConcurrentUniqueness(t *testing.T) {
+	g, err := NewGenerator(Config{MachineID: 1, BusinessType: BusinessOrder})
 	if err != nil {
 		t.Fatalf("NewGenerator() error = %v", err)
 	}
 
-	ctx := context.Background()
-	id, err := generator.GenerateWithContext(ctx)
-	if err != nil {
-		t.Fatalf("GenerateWithContext() error = %v", err)
-	}
-	if id == "" {
-		t.Error("GenerateWithContext() returned empty string")
-	}
-}
-
-func TestGenerator_Concurrent(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 并发生成ID
-	results := make(chan string, 100)
-	for i := 0; i < 100; i++ {
+	const workers = 200
+	ids := make(chan uint64, workers)
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
 		go func() {
-			id, err := generator.Generate()
+			id, err := g.NextID(context.Background())
 			if err != nil {
-				t.Errorf("Generate() error = %v", err)
+				errCh <- err
 				return
 			}
-			results <- id
+			ids <- id
+			errCh <- nil
 		}()
 	}
 
-	// 收集结果
-	ids := make(map[string]bool)
-	for i := 0; i < 100; i++ {
-		id := <-results
-		t.Logf("id: %s", id)
-		if id == "" {
-			t.Error("Generate() returned empty string")
+	uniq := make(map[uint64]struct{}, workers)
+	for i := 0; i < workers; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("NextID() error = %v", err)
 		}
-		ids[id] = true
+		id := <-ids
+		uniq[id] = struct{}{}
 	}
-
-	// 验证所有ID都是唯一的（至少大部分应该是唯一的）
-	if len(ids) < 50 {
-		t.Errorf("Only %d unique IDs generated, expected at least 50", len(ids))
+	if len(uniq) != workers {
+		t.Fatalf("unique ids = %d, want %d", len(uniq), workers)
 	}
 }
 
-func TestGenerator_GenerateBatch(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 测试批量生成
-	count := 100
-	ids, err := generator.GenerateBatch(count)
-	if err != nil {
-		t.Fatalf("GenerateBatch() error = %v", err)
-	}
-
-	if len(ids) != count {
-		t.Errorf("GenerateBatch() returned %d IDs, want %d", len(ids), count)
-	}
-
-	// 验证所有ID都是唯一的
-	idMap := make(map[string]bool)
-	for i, id := range ids {
-		if id == "" {
-			t.Errorf("GenerateBatch() returned empty string at index %d", i)
-		}
-		if idMap[id] {
-			t.Errorf("Duplicate ID found at index %d: %s", i, id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("✓ 成功批量生成 %d 个唯一ID", count)
-}
-
-func TestGenerator_GenerateBatchWithContext(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	ctx := context.Background()
-	count := 50
-	ids, err := generator.GenerateBatchWithContext(ctx, count)
-	if err != nil {
-		t.Fatalf("GenerateBatchWithContext() error = %v", err)
-	}
-
-	if len(ids) != count {
-		t.Errorf("GenerateBatchWithContext() returned %d IDs, want %d", len(ids), count)
-	}
-
-	// 验证所有ID都是唯一的
-	idMap := make(map[string]bool)
-	for i, id := range ids {
-		if id == "" {
-			t.Errorf("GenerateBatchWithContext() returned empty string at index %d", i)
-		}
-		if idMap[id] {
-			t.Errorf("Duplicate ID found at index %d: %s", i, id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("✓ 成功批量生成 %d 个唯一ID", count)
-}
-
-func TestGenerator_NextIDBatch(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	ctx := context.Background()
-	count := 100
-	ids, err := generator.NextIDBatch(ctx, count)
-	if err != nil {
-		t.Fatalf("NextIDBatch() error = %v", err)
-	}
-
-	if len(ids) != count {
-		t.Errorf("NextIDBatch() returned %d IDs, want %d", len(ids), count)
-	}
-
-	// 验证所有ID都是唯一的
-	idMap := make(map[uint64]bool)
-	for i, id := range ids {
-		if id == 0 {
-			t.Errorf("NextIDBatch() returned zero ID at index %d", i)
-		}
-		if idMap[id] {
-			t.Errorf("Duplicate ID found at index %d: %d", i, id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("✓ 成功批量生成 %d 个唯一数字ID", count)
-}
-
-func TestGenerator_GenerateBatch_InvalidCount(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 测试 count <= 0
-	_, err = generator.GenerateBatch(0)
-	if err == nil {
-		t.Error("GenerateBatch(0) should return error")
-	}
-
-	_, err = generator.GenerateBatch(-1)
-	if err == nil {
-		t.Error("GenerateBatch(-1) should return error")
-	}
-
-	// 测试 count > MaxBatchCount
-	_, err = generator.GenerateBatch(MaxBatchCount + 1)
-	if err == nil {
-		t.Errorf("GenerateBatch(%d) should return error", MaxBatchCount+1)
-	}
-}
-
-func TestGenerator_NextIDBatch_InvalidCount(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	ctx := context.Background()
-
-	// 测试 count <= 0
-	_, err = generator.NextIDBatch(ctx, 0)
-	if err == nil {
-		t.Error("NextIDBatch(0) should return error")
-	}
-
-	_, err = generator.NextIDBatch(ctx, -1)
-	if err == nil {
-		t.Error("NextIDBatch(-1) should return error")
-	}
-
-	// 测试 count > MaxBatchCount
-	_, err = generator.NextIDBatch(ctx, MaxBatchCount+1)
-	if err == nil {
-		t.Errorf("NextIDBatch(%d) should return error", MaxBatchCount+1)
-	}
-}
-
-func TestGenerator_GenerateBatch_LargeCount(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 测试较大的批量生成
-	count := 1000
-	ids, err := generator.GenerateBatch(count)
-	if err != nil {
-		t.Fatalf("GenerateBatch() error = %v", err)
-	}
-
-	if len(ids) != count {
-		t.Errorf("GenerateBatch() returned %d IDs, want %d", len(ids), count)
-	}
-
-	// 验证所有ID都是唯一的
-	idMap := make(map[string]bool)
-	for _, id := range ids {
-		if idMap[id] {
-			t.Errorf("Duplicate ID found: %s", id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("✓ 成功批量生成 %d 个唯一ID", count)
-	t.Logf("✓ 唯一ID数量: %d", len(idMap))
-}
-
-func TestGenerator_GenerateBatch_Concurrent(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 并发批量生成
-	const goroutineCount = 10
-	const batchSize = 100
-	results := make(chan []string, goroutineCount)
-	errors := make(chan error, goroutineCount)
-
-	for i := 0; i < goroutineCount; i++ {
-		go func() {
-			ids, err := generator.GenerateBatch(batchSize)
-			if err != nil {
-				errors <- err
-				return
-			}
-			results <- ids
-		}()
-	}
-
-	// 收集结果
-	allIDs := make(map[string]bool)
-	for i := 0; i < goroutineCount; i++ {
-		select {
-		case ids := <-results:
-			for _, id := range ids {
-				if allIDs[id] {
-					t.Errorf("Duplicate ID found in concurrent batch: %s", id)
-				}
-				allIDs[id] = true
-			}
-		case err := <-errors:
-			t.Errorf("GenerateBatch() error in concurrent test: %v", err)
-		}
-	}
-
-	expectedCount := goroutineCount * batchSize
-	if len(allIDs) != expectedCount {
-		t.Errorf("Expected %d unique IDs, got %d", expectedCount, len(allIDs))
-	}
-
-	t.Logf("✓ 并发批量生成测试：成功生成 %d 个唯一ID", len(allIDs))
-}
-
-func TestGenerator_GenerateBatch_BoundaryValues(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 测试边界值：1个ID
-	ids, err := generator.GenerateBatch(1)
-	if err != nil {
-		t.Fatalf("GenerateBatch(1) error = %v", err)
-	}
-	if len(ids) != 1 {
-		t.Errorf("GenerateBatch(1) returned %d IDs, want 1", len(ids))
-	}
-	if ids[0] == "" {
-		t.Error("GenerateBatch(1) returned empty string")
-	}
-
-	// 测试边界值：MaxBatchCount个ID
-	ids, err = generator.GenerateBatch(MaxBatchCount)
-	if err != nil {
-		t.Fatalf("GenerateBatch(%d) error = %v", MaxBatchCount, err)
-	}
-	if len(ids) != MaxBatchCount {
-		t.Errorf("GenerateBatch(%d) returned %d IDs, want %d", MaxBatchCount, len(ids), MaxBatchCount)
-	}
-
-	// 验证唯一性
-	idMap := make(map[string]bool)
-	for _, id := range ids {
-		if idMap[id] {
-			t.Errorf("Duplicate ID found: %s", id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("✓ 边界值测试：成功生成 1 个和 %d 个唯一ID", MaxBatchCount)
-}
-
-func TestGenerator_GenerateBatch_ReturnRawID(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-		ReturnRawID:  true, // 返回原始数字ID
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	count := 100
-	ids, err := generator.GenerateBatch(count)
-	if err != nil {
-		t.Fatalf("GenerateBatch() error = %v", err)
-	}
-
-	if len(ids) != count {
-		t.Errorf("GenerateBatch() returned %d IDs, want %d", len(ids), count)
-	}
-
-	// 验证所有ID都是数字字符串
-	idMap := make(map[string]bool)
-	for i, id := range ids {
-		if id == "" {
-			t.Errorf("GenerateBatch() returned empty string at index %d", i)
-		}
-		// 验证是数字字符串
-		for _, r := range id {
-			if r < '0' || r > '9' {
-				t.Errorf("GenerateBatch() returned non-numeric ID at index %d: %s", i, id)
-				break
-			}
-		}
-		if idMap[id] {
-			t.Errorf("Duplicate ID found at index %d: %s", i, id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("✓ ReturnRawID 模式：成功批量生成 %d 个唯一数字ID字符串", count)
-}
-
-func TestGenerator_NextIDBatch_BoundaryValues(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	ctx := context.Background()
-
-	// 测试边界值：1个ID
-	ids, err := generator.NextIDBatch(ctx, 1)
-	if err != nil {
-		t.Fatalf("NextIDBatch(1) error = %v", err)
-	}
-	if len(ids) != 1 {
-		t.Errorf("NextIDBatch(1) returned %d IDs, want 1", len(ids))
-	}
-	if ids[0] == 0 {
-		t.Error("NextIDBatch(1) returned zero ID")
-	}
-
-	// 测试边界值：MaxBatchCount个ID
-	ids, err = generator.NextIDBatch(ctx, MaxBatchCount)
-	if err != nil {
-		t.Fatalf("NextIDBatch(%d) error = %v", MaxBatchCount, err)
-	}
-	if len(ids) != MaxBatchCount {
-		t.Errorf("NextIDBatch(%d) returned %d IDs, want %d", MaxBatchCount, len(ids), MaxBatchCount)
-	}
-
-	// 验证唯一性
-	idMap := make(map[uint64]bool)
-	for _, id := range ids {
-		if id == 0 {
-			t.Error("NextIDBatch() returned zero ID")
-		}
-		if idMap[id] {
-			t.Errorf("Duplicate ID found: %d", id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("✓ NextIDBatch 边界值测试：成功生成 1 个和 %d 个唯一数字ID", MaxBatchCount)
-}
-
-func TestGenerator_GenerateBatch_Performance(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 性能测试：生成1000个ID
-	count := 1000
-	startTime := time.Now()
-	ids, err := generator.GenerateBatch(count)
-	duration := time.Since(startTime)
-
-	if err != nil {
-		t.Fatalf("GenerateBatch() error = %v", err)
-	}
-
-	if len(ids) != count {
-		t.Errorf("GenerateBatch() returned %d IDs, want %d", len(ids), count)
-	}
-
-	// 计算性能指标
-	qps := float64(count) / duration.Seconds()
-	avgLatency := duration / time.Duration(count)
-
-	t.Logf("✓ 性能测试：生成 %d 个ID", count)
-	t.Logf("  - 总耗时: %v", duration)
-	t.Logf("  - 平均耗时: %v/ID", avgLatency)
-	t.Logf("  - QPS: %.0f", qps)
-
-	// 验证唯一性
-	idMap := make(map[string]bool)
-	for _, id := range ids {
-		if idMap[id] {
-			t.Errorf("Duplicate ID found: %s", id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("  - 唯一ID数量: %d", len(idMap))
-}
-
-func TestGenerator_NextIDBatch_Performance(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	ctx := context.Background()
-
-	// 性能测试：生成1000个ID
-	count := 1000
-	startTime := time.Now()
-	ids, err := generator.NextIDBatch(ctx, count)
-	duration := time.Since(startTime)
-
-	if err != nil {
-		t.Fatalf("NextIDBatch() error = %v", err)
-	}
-
-	if len(ids) != count {
-		t.Errorf("NextIDBatch() returned %d IDs, want %d", len(ids), count)
-	}
-
-	// 计算性能指标
-	qps := float64(count) / duration.Seconds()
-	avgLatency := duration / time.Duration(count)
-
-	t.Logf("✓ NextIDBatch 性能测试：生成 %d 个ID", count)
-	t.Logf("  - 总耗时: %v", duration)
-	t.Logf("  - 平均耗时: %v/ID", avgLatency)
-	t.Logf("  - QPS: %.0f", qps)
-
-	// 验证唯一性
-	idMap := make(map[uint64]bool)
-	for _, id := range ids {
-		if idMap[id] {
-			t.Errorf("Duplicate ID found: %d", id)
-		}
-		idMap[id] = true
-	}
-
-	t.Logf("  - 唯一ID数量: %d", len(idMap))
-}
-
-func TestGenerator_GenerateBatch_Consistency(t *testing.T) {
-	generator1, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	generator2, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
-	})
-	if err != nil {
-		t.Fatalf("NewGenerator() error = %v", err)
-	}
-
-	// 单个生成 vs 批量生成的一致性测试
-	const count = 10
-	singleIDs := make([]string, count)
-	for i := 0; i < count; i++ {
-		id, err := generator1.Generate()
+func TestGenerator_MachineProviderLifecycle(t *testing.T) {
+	t.Run("initialized once for zero machine id", func(t *testing.T) {
+		provider := &stubMachineIDProvider{id: 0}
+		g, err := NewGenerator(Config{MachineIDProvider: provider, BusinessType: BusinessOrder})
 		if err != nil {
-			t.Fatalf("Generate() error = %v", err)
+			t.Fatalf("NewGenerator() error = %v", err)
 		}
-		singleIDs[i] = id
-	}
 
-	batchIDs, err := generator2.GenerateBatch(count)
-	if err != nil {
-		t.Fatalf("GenerateBatch() error = %v", err)
-	}
-
-	// 验证两种方式生成的ID格式一致
-	if len(singleIDs) != len(batchIDs) {
-		t.Errorf("Length mismatch: single=%d, batch=%d", len(singleIDs), len(batchIDs))
-	}
-
-	// 验证ID格式一致（长度、字符集等）
-	for i := 0; i < count; i++ {
-		if len(singleIDs[i]) != len(batchIDs[i]) {
-			t.Errorf("ID length mismatch at index %d: single=%d, batch=%d", i, len(singleIDs[i]), len(batchIDs[i]))
-		}
-		// 验证字符集一致（都是Base62字符）
-		for _, r := range singleIDs[i] {
-			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
-				t.Errorf("Invalid character in single ID at index %d: %s", i, singleIDs[i])
+		for i := 0; i < 8; i++ {
+			if _, err := g.NextID(context.Background()); err != nil {
+				t.Fatalf("NextID() error = %v", err)
 			}
 		}
-		for _, r := range batchIDs[i] {
-			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
-				t.Errorf("Invalid character in batch ID at index %d: %s", i, batchIDs[i])
+
+		if got := atomic.LoadInt32(&provider.getCalls); got != 1 {
+			t.Fatalf("GetMachineID() calls = %d, want 1", got)
+		}
+		if got := atomic.LoadInt32(&provider.expCalls); got != 1 {
+			t.Fatalf("SetMachineIDExpiration() calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("initialized once under concurrency", func(t *testing.T) {
+		provider := &stubMachineIDProvider{id: 9}
+		g, err := NewGenerator(Config{MachineIDProvider: provider, BusinessType: BusinessOrder})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
+
+		const workers = 64
+		var wg sync.WaitGroup
+		errCh := make(chan error, workers)
+		wg.Add(workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				defer wg.Done()
+				_, err := g.NextID(context.Background())
+				errCh <- err
+			}()
+		}
+		wg.Wait()
+		close(errCh)
+
+		for err := range errCh {
+			if err != nil {
+				t.Fatalf("NextID() error = %v", err)
 			}
 		}
-	}
+		if got := atomic.LoadInt32(&provider.getCalls); got != 1 {
+			t.Fatalf("GetMachineID() calls = %d, want 1", got)
+		}
+	})
 
-	t.Logf("✓ 一致性测试：单个生成和批量生成的ID格式一致")
+	t.Run("provider failure bubbles up", func(t *testing.T) {
+		provider := &stubMachineIDProvider{getErr: errors.New("machine provider unavailable")}
+		g, err := NewGenerator(Config{MachineIDProvider: provider, BusinessType: BusinessOrder})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
+		if _, err := g.NextID(context.Background()); err == nil {
+			t.Fatal("NextID() error = nil, want non-nil")
+		}
+	})
 }
 
-func TestGenerator_GenerateBatch_DifferentBusinessTypes(t *testing.T) {
-	businessTypes := []BusinessType{
-		BusinessOrder,
-		BusinessPayment,
-		BusinessUser,
-	}
-
-	for _, bt := range businessTypes {
-		generator, err := NewGenerator(Config{
-			MachineID:    1,
-			BusinessType: bt,
+func TestGenerator_MachineLeaseLifecycle(t *testing.T) {
+	t.Run("acquire once", func(t *testing.T) {
+		provider := &stubMachineIDLeaseProvider{renewOK: true}
+		g, err := NewGenerator(Config{
+			MachineIDLeaseProvider: provider,
+			BusinessType:           BusinessOrder,
+			MachineIDLeaseDuration: time.Minute,
 		})
 		if err != nil {
-			t.Fatalf("NewGenerator() with BusinessType %d error = %v", bt, err)
+			t.Fatalf("NewGenerator() error = %v", err)
 		}
 
-		count := 50
-		ids, err := generator.GenerateBatch(count)
-		if err != nil {
-			t.Fatalf("GenerateBatch() with BusinessType %d error = %v", bt, err)
-		}
-
-		if len(ids) != count {
-			t.Errorf("GenerateBatch() with BusinessType %d returned %d IDs, want %d", bt, len(ids), count)
-		}
-
-		// 验证唯一性
-		idMap := make(map[string]bool)
-		for _, id := range ids {
-			if idMap[id] {
-				t.Errorf("Duplicate ID found for BusinessType %d: %s", bt, id)
+		for i := 0; i < 8; i++ {
+			if _, err := g.NextID(context.Background()); err != nil {
+				t.Fatalf("NextID() error = %v", err)
 			}
-			idMap[id] = true
+		}
+		if got := atomic.LoadInt32(&provider.acquireCalled); got != 1 {
+			t.Fatalf("AcquireMachineIDLease() calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("renew when due", func(t *testing.T) {
+		provider := &stubMachineIDLeaseProvider{renewOK: true}
+		g, err := NewGenerator(Config{
+			MachineIDLeaseProvider: provider,
+			BusinessType:           BusinessOrder,
+			MachineIDLeaseDuration: 6 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
+		if _, err := g.NextID(context.Background()); err != nil {
+			t.Fatalf("first NextID() error = %v", err)
+		}
+		time.Sleep(4 * time.Millisecond)
+		if _, err := g.NextID(context.Background()); err != nil {
+			t.Fatalf("second NextID() error = %v", err)
+		}
+		if got := atomic.LoadInt32(&provider.renewCalled); got < 1 {
+			t.Fatalf("RenewMachineIDLease() calls = %d, want >= 1", got)
+		}
+	})
+
+	t.Run("renew lost returns sentinel error", func(t *testing.T) {
+		provider := &stubMachineIDLeaseProvider{renewOK: false}
+		g, err := NewGenerator(Config{
+			MachineIDLeaseProvider: provider,
+			BusinessType:           BusinessOrder,
+			MachineIDLeaseDuration: 6 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
+		if _, err := g.NextID(context.Background()); err != nil {
+			t.Fatalf("first NextID() error = %v", err)
+		}
+		time.Sleep(4 * time.Millisecond)
+		if _, err := g.NextID(context.Background()); !errors.Is(err, ErrMachineIDLeaseLost) {
+			t.Fatalf("second NextID() error = %v, want ErrMachineIDLeaseLost", err)
+		}
+	})
+
+	t.Run("acquire unavailable returns sentinel error", func(t *testing.T) {
+		g, err := NewGenerator(Config{
+			MachineIDLeaseProvider: machineIDLeaseProviderFunc(func(ctx context.Context, ttl time.Duration) (*MachineIDLease, error) {
+				_ = ctx
+				_ = ttl
+				return nil, nil
+			}),
+			BusinessType:           BusinessOrder,
+			MachineIDLeaseDuration: time.Second,
+		})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
 		}
 
-		t.Logf("✓ BusinessType %d: 成功批量生成 %d 个唯一ID", bt, count)
-	}
+		if _, err := g.NextID(context.Background()); !errors.Is(err, ErrMachineIDLeaseUnavailable) {
+			t.Fatalf("NextID() error = %v, want ErrMachineIDLeaseUnavailable", err)
+		}
+	})
 }
 
-func TestGenerator_GenerateBatchWithContext_Cancel(t *testing.T) {
-	generator, err := NewGenerator(Config{
-		MachineID:    1,
-		BusinessType: BusinessOrder,
+func TestGenerator_SequenceProviderFailure(t *testing.T) {
+	g, err := NewGenerator(Config{
+		MachineID:        1,
+		BusinessType:     BusinessOrder,
+		SequenceProvider: &failSequenceProvider{},
 	})
 	if err != nil {
 		t.Fatalf("NewGenerator() error = %v", err)
 	}
 
-	// 创建可取消的Context
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 立即取消
+	// 进入同时间片分支，从而调用 SequenceProvider。
+	g.startTime = time.Now().UnixMilli()/10 - 1
+	g.elapsedTime = 1
 
-	// 虽然Context已取消，但批量生成应该能正常完成（因为nextID不检查Context）
-	// 这个测试主要是验证代码不会因为Context取消而panic
-	count := 10
-	ids, err := generator.GenerateBatchWithContext(ctx, count)
-	if err != nil {
-		// Context取消不应该导致错误（因为nextID不检查Context）
-		// 但如果实现中检查了Context，这里可能会返回错误，这是可以接受的
-		t.Logf("GenerateBatchWithContext() with cancelled context returned error (acceptable): %v", err)
-		return
+	if _, err := g.NextID(context.Background()); err == nil {
+		t.Fatal("NextID() error = nil, want non-nil")
 	}
+}
 
-	if len(ids) != count {
-		t.Errorf("GenerateBatchWithContext() returned %d IDs, want %d", len(ids), count)
-	}
+func TestGenerator_TimeBehavior(t *testing.T) {
+	t.Run("sequence overflow advances elapsed time", func(t *testing.T) {
+		g, err := NewGenerator(Config{MachineID: 1, BusinessType: BusinessOrder})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
 
-	t.Logf("✓ Context取消测试：成功生成 %d 个ID", len(ids))
+		nowUnit := time.Now().UnixMilli() / 10
+		g.startTime = nowUnit
+		g.elapsedTime = 0
+		g.sequence = SnowflakeMaxSequence
+
+		if _, err := g.NextID(context.Background()); err != nil {
+			t.Fatalf("NextID() error = %v", err)
+		}
+		if g.elapsedTime < 1 {
+			t.Fatalf("elapsedTime = %d, want >= 1", g.elapsedTime)
+		}
+	})
+
+	t.Run("clock backward still monotonic per instance", func(t *testing.T) {
+		g, err := NewGenerator(Config{MachineID: 1, BusinessType: BusinessOrder})
+		if err != nil {
+			t.Fatalf("NewGenerator() error = %v", err)
+		}
+
+		current := time.Now().UnixMilli()/10 - g.startTime
+		g.elapsedTime = current + 10
+		g.sequence = 0
+
+		first, err := g.NextID(context.Background())
+		if err != nil {
+			t.Fatalf("first NextID() error = %v", err)
+		}
+		second, err := g.NextID(context.Background())
+		if err != nil {
+			t.Fatalf("second NextID() error = %v", err)
+		}
+		if second <= first {
+			t.Fatalf("second id (%d) should be greater than first id (%d)", second, first)
+		}
+	})
+}
+
+type machineIDLeaseProviderFunc func(ctx context.Context, ttl time.Duration) (*MachineIDLease, error)
+
+func (f machineIDLeaseProviderFunc) AcquireMachineIDLease(ctx context.Context, ttl time.Duration) (*MachineIDLease, error) {
+	return f(ctx, ttl)
+}
+
+func (f machineIDLeaseProviderFunc) RenewMachineIDLease(ctx context.Context, lease *MachineIDLease, ttl time.Duration) (bool, error) {
+	_ = ctx
+	_ = lease
+	_ = ttl
+	return true, nil
+}
+
+func (f machineIDLeaseProviderFunc) ReleaseMachineIDLease(ctx context.Context, lease *MachineIDLease) error {
+	_ = ctx
+	_ = lease
+	return nil
+}
+
+func (f machineIDLeaseProviderFunc) HealthCheck(ctx context.Context) error {
+	_ = ctx
+	return nil
+}
+
+func (f machineIDLeaseProviderFunc) Close() error {
+	return nil
 }

@@ -49,4 +49,3 @@ func (m *MemoryMachineIDProvider) HealthCheck(ctx context.Context) error {
 func (m *MemoryMachineIDProvider) Close() error {
 	return nil
 }
-

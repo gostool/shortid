@@ -1,5 +1,38 @@
 # HTTP服务性能测试报告
 
+## Redis租约模式（SDK直连）补充实测
+
+> 本节为 `MachineIDLeaseProvider`（Lua Acquire）+ 本地序列号的本地实测数据，直接来自测试输出。
+
+### 测试命令
+
+```bash
+go test -run 'TestPerf_RedisLeaseMode_(SingleInstance|TwoInstances|MultiInstances)$' -v ./...
+```
+
+### 测试环境
+
+- 时间：2026-03-08 21:13 CST
+- 机器：MacBook Pro (MacBookPro18,3)
+- CPU：Apple M1 Pro，8 Core (6P + 2E)
+- 内存：16 GB
+- 系统：macOS 15.6 (Darwin 24.6.0, arm64)
+- Redis：本地 Docker 单实例（`localhost:6379`）
+
+### 测试结果
+
+| 场景 | 请求量 | 总耗时 | 平均耗时 | QPS |
+|---|---:|---:|---:|---:|
+| 单实例（1个Generator） | 50,000 | 4.274s | 85.472µs | 11,700 |
+| 双实例（2个Generator并发） | 60,000 | 2.576s | 42.935µs | 23,291 |
+| 16实例并发 | 80,000 | 0.456s | 5.705µs | 175,277 |
+| 32实例并发 | 96,000 | 0.261s | 2.713µs | 368,488 |
+| 64实例并发 | 96,000 | 0.124s | 1.291µs | 774,330 |
+
+说明：
+- 多实例场景用于验证并行扩展能力，不等同于线上端到端吞吐。
+- 线上性能受实例规格、网络RT、Redis拓扑与持久化策略影响，应按目标环境复测。
+
 ## 📋 测试概述
 
 本报告记录了HTTP服务 `/nextid` 端点的性能测试结果。测试使用Apache Bench (ab)工具进行。
@@ -274,4 +307,3 @@ curl http://localhost:8080/health
 **测试工具**: Apache Bench (ab) Version 2.3  
 **测试环境**: macOS, Redis localhost:6379  
 **数据来源**: 实际运行测试获取的真实数据
-

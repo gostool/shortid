@@ -2,6 +2,7 @@ package shortid
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -9,42 +10,40 @@ func TestMemoryMachineIDProvider_GetMachineID(t *testing.T) {
 	provider := NewMemoryMachineIDProvider()
 	ctx := context.Background()
 
-	// 测试基本功能
-	id1, err := provider.GetMachineID(ctx)
+	first, err := provider.GetMachineID(ctx)
 	if err != nil {
-		t.Fatalf("GetMachineID() error = %v", err)
+		t.Fatalf("GetMachineID() first error = %v", err)
 	}
-	if id1 != 1 {
-		t.Errorf("GetMachineID() = %d, want 1", id1)
+	if first != 1 {
+		t.Fatalf("GetMachineID() first = %d, want 1", first)
 	}
 
-	id2, err := provider.GetMachineID(ctx)
+	second, err := provider.GetMachineID(ctx)
 	if err != nil {
-		t.Fatalf("GetMachineID() error = %v", err)
+		t.Fatalf("GetMachineID() second error = %v", err)
 	}
-	if id2 != 2 {
-		t.Errorf("GetMachineID() = %d, want 2", id2)
+	if second != 2 {
+		t.Fatalf("GetMachineID() second = %d, want 2", second)
 	}
+}
 
-	// 测试取模64 - 验证ID在有效范围内
-	// 前面已经调用了2次，再调用62次，总共64次
-	for i := 0; i < 62; i++ {
+func TestMemoryMachineIDProvider_RangeAndWrap(t *testing.T) {
+	provider := NewMemoryMachineIDProvider()
+	ctx := context.Background()
+
+	seen := make(map[uint16]struct{}, 64)
+	for i := 0; i < 128; i++ {
 		id, err := provider.GetMachineID(ctx)
 		if err != nil {
 			t.Fatalf("GetMachineID() error = %v", err)
 		}
 		if id > 63 {
-			t.Errorf("GetMachineID() returned invalid id = %d, want 0-63", id)
+			t.Fatalf("GetMachineID() = %d, want 0-63", id)
 		}
+		seen[id] = struct{}{}
 	}
-
-	// 第65个应该在有效范围内
-	id65, err := provider.GetMachineID(ctx)
-	if err != nil {
-		t.Fatalf("GetMachineID() error = %v", err)
-	}
-	if id65 > 63 {
-		t.Errorf("GetMachineID() returned invalid id = %d, want 0-63", id65)
+	if len(seen) != 64 {
+		t.Fatalf("covered slots = %d, want 64", len(seen))
 	}
 }
 
@@ -52,32 +51,43 @@ func TestMemoryMachineIDProvider_Concurrent(t *testing.T) {
 	provider := NewMemoryMachineIDProvider()
 	ctx := context.Background()
 
-	// 并发测试
-	results := make(chan uint16, 100)
-	for i := 0; i < 100; i++ {
+	const workers = 256
+	ids := make(chan uint16, workers)
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
 		go func() {
+			defer wg.Done()
 			id, err := provider.GetMachineID(ctx)
 			if err != nil {
-				t.Errorf("GetMachineID() error = %v", err)
+				errCh <- err
 				return
 			}
-			results <- id
+			ids <- id
+			errCh <- nil
 		}()
 	}
+	wg.Wait()
+	close(errCh)
+	close(ids)
 
-	// 收集结果
-	ids := make(map[uint16]bool)
-	for i := 0; i < 100; i++ {
-		id := <-results
-		if id > 63 {
-			t.Errorf("GetMachineID() returned invalid id = %d, want 0-63", id)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("GetMachineID() error = %v", err)
 		}
-		ids[id] = true
 	}
 
-	// 验证所有ID都在有效范围内
-	if len(ids) == 0 {
-		t.Error("No IDs generated")
+	count := 0
+	for id := range ids {
+		count++
+		if id > 63 {
+			t.Fatalf("GetMachineID() = %d, want 0-63", id)
+		}
+	}
+	if count != workers {
+		t.Fatalf("results = %d, want %d", count, workers)
 	}
 }
 
@@ -85,19 +95,13 @@ func TestMemoryMachineIDProvider_OtherMethods(t *testing.T) {
 	provider := NewMemoryMachineIDProvider()
 	ctx := context.Background()
 
-	// 测试 SetMachineIDExpiration（应该总是成功）
 	if err := provider.SetMachineIDExpiration(ctx, 1, 0); err != nil {
-		t.Errorf("SetMachineIDExpiration() error = %v", err)
+		t.Fatalf("SetMachineIDExpiration() error = %v", err)
 	}
-
-	// 测试 HealthCheck（应该总是成功）
 	if err := provider.HealthCheck(ctx); err != nil {
-		t.Errorf("HealthCheck() error = %v", err)
+		t.Fatalf("HealthCheck() error = %v", err)
 	}
-
-	// 测试 Close（应该总是成功）
 	if err := provider.Close(); err != nil {
-		t.Errorf("Close() error = %v", err)
+		t.Fatalf("Close() error = %v", err)
 	}
 }
-

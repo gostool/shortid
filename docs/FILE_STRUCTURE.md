@@ -11,15 +11,18 @@ shortid/
 ├── machineid/                     # 机器ID提供者模块
 │   ├── memory.go                  # ✅ MemoryMachineIDProvider 实现（测试用）
 │   ├── redis.go                   # ✅ RedisMachineIDProvider 实现（生产用）
-│   └── memory_test.go             # ✅ 机器ID提供者测试
+│   ├── memory_test.go             # ✅ 机器ID提供者测试
+│   └── redis_test.go              # ✅ Redis机器ID提供者测试
 │
 ├── sequence/                      # 序列号提供者模块
 │   ├── memory.go                  # ✅ MemorySequenceProvider 实现（测试用）
 │   ├── redis.go                   # ✅ RedisSequenceProvider 实现（生产用）
-│   └── memory_test.go             # ✅ 序列号提供者测试
+│   ├── memory_test.go             # ✅ 序列号提供者测试
+│   └── redis_test.go              # ✅ Redis序列号提供者测试
 │
-├── generator.go                   # ✅ Generator 核心实现
-├── generator_test.go              # ✅ Generator 单元测试
+├── generator.go                   # ✅ Generator 核心实现（ID时间/序列主流程）
+├── generator_machine_runtime.go   # ✅ 机器ID运行时（固定/Provider/租约）
+├── generator_test.go              # ✅ Generator 单元测试（配置/生命周期/并发）
 │
 ├── http_server.go                 # ✅ HTTP服务器实现（提供ID生成API）
 │
@@ -43,6 +46,7 @@ shortid/
 │
 ├── docs/                          # 文档目录
 │   ├── FILE_STRUCTURE.md          # 文件结构文档（本文件）
+│   ├── MINIMAL_VALIDATION.md      # 最小验证手册
 │   ├── PERFORMANCE_TEST.md        # 性能测试报告
 │   ├── step3:go唯一id.md          # 实现文档
 │   └── ...                        # 其他文档
@@ -110,7 +114,7 @@ shortid/
 - 实现 `SequenceProvider` 接口的所有方法
 
 ### 6. `generator.go`
-**职责**：Generator 核心实现
+**职责**：Generator 核心实现（时间推进、序列处理、ID组装）
 
 **内容**：
 - `Generator` 结构体
@@ -120,7 +124,15 @@ shortid/
 - `nextID` 方法（Sonyflake算法实现）
 - `toShortID` 方法（短ID转换）
 
-### 7. `http_server.go`
+### 7. `generator_machine_runtime.go`
+**职责**：机器ID运行时管理（从 `nextID` 中解耦）
+
+**内容**：
+- `ensureMachineIdentity` 统一入口
+- `ensureMachineLease` 租约获取与续租
+- `ensureMachineProvider` 兼容旧 `MachineIDProvider` 延迟初始化
+
+### 8. `http_server.go`
 **职责**：HTTP服务器实现，提供ID生成API
 
 **内容**：
@@ -134,7 +146,7 @@ shortid/
 - `IDResponse` - ID生成响应结构
 - Redis提供者实现（`redisMachineIDProviderImpl`, `redisSequenceProviderImpl`）
 
-### 8. `errors.go`
+### 9. `errors.go`
 **职责**：错误定义
 
 **内容**：
@@ -143,21 +155,23 @@ shortid/
 - `ErrInvalidMachineID` - 无效机器ID错误
 - `ErrInvalidSequence` - 无效序列号错误
 
-### 9. 测试文件
+### 10. 测试文件
 
 #### 单元测试
 - `generator_test.go` - Generator 核心功能测试
 - `base_test.go` - Base62编码测试
 - `timestamp_test.go` - 时间戳压缩测试
 - `machineid/memory_test.go` - 内存机器ID提供者测试
+- `machineid/redis_test.go` - Redis机器ID提供者测试
 - `sequence/memory_test.go` - 内存序列号提供者测试
+- `sequence/redis_test.go` - Redis序列号提供者测试
 
 #### SDK集成测试
 - `sdk_single_mem_test.go` - 单机内存模式SDK测试
   - `TestSDK_SingleMemory_ShortID` - 测试短ID生成
   - `TestSDK_SingleMemory_UID` - 测试原始数字ID生成
   - `TestSDK_SingleMemory_NextID` - 测试NextID方法
-- `sdk_single_redis_test.go` - 单机Redis模式SDK测试（待实现）
+- `sdk_single_redis_test.go` - 单机Redis模式SDK测试
 - `sdk_serverless_redis_test.go` - Serverless Redis模式SDK测试
   - `TestSDK_ServerlessRedis_ShortID` - 完整Serverless模式（Redis机器ID+Redis序列号）
   - `TestSDK_ServerlessRedis_NextID` - 完整Serverless模式生成原始ID
@@ -169,7 +183,7 @@ shortid/
   - `TestSDK_HTTPRedis_Concurrent` - 并发HTTP请求测试
   - `TestSDK_HTTPRedis_MethodNotAllowed` - 方法限制测试
 
-### 10. 示例和脚本
+### 11. 示例和脚本
 
 - `example_http/main.go` - HTTP服务器启动示例
 - `test.sh` - 单元测试脚本
@@ -188,7 +202,7 @@ shortid/
 - ✅ `RedisMachineIDProvider` 实现（`machineid/redis.go`）
 - ✅ `MemorySequenceProvider` 实现（`sequence/memory.go`）
 - ✅ `RedisSequenceProvider` 实现（`sequence/redis.go`）
-- ✅ `Generator` 核心实现（`generator.go`）
+- ✅ `Generator` 核心实现（`generator.go` + `generator_machine_runtime.go`）
   - ✅ 支持固定机器ID模式
   - ✅ 支持Serverless模式（动态机器ID）
   - ✅ 支持本地序列号模式
@@ -208,17 +222,17 @@ shortid/
 - ✅ Base62编码测试
 - ✅ 时间戳压缩测试
 - ✅ 内存Provider测试
+- ✅ Redis Provider测试
 - ✅ SDK集成测试（单机内存、Serverless Redis、HTTP服务）
 
 #### 文档
 - ✅ 文件结构文档（本文件）
+- ✅ 最小验证手册（`MINIMAL_VALIDATION.md`）
 - ✅ 性能测试报告（`PERFORMANCE_TEST.md`）
 - ✅ 实现文档（`step3:go唯一id.md`）
 
 ### 待实现的功能
 
-- ⏳ `sdk_single_redis_test.go` - 单机Redis模式测试
-- ⏳ Redis Provider的单元测试（`machineid/redis_test.go`, `sequence/redis_test.go`）
 - ⏳ HTTP服务的更多测试场景
 
 ## 📦 包结构
@@ -290,4 +304,3 @@ id, _ := generator.GenerateWithContext(ctx)
 server, _ := shortid.NewHTTPServer(":8080", "localhost:6379", shortid.BusinessOrder)
 server.Start()
 ```
-

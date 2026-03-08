@@ -36,7 +36,9 @@ func TestSDK_SingleMemory_ShortID(t *testing.T) {
 			t.Error("GenerateWithContext() returned empty string")
 		}
 		ids[i] = id
-		t.Logf("ID %d: %s (长度: %d)", i+1, id, len(id))
+	}
+	for i := 0; i < 5 && i < len(ids); i++ {
+		t.Logf("ID[%d]: %s (长度: %d)", i, ids[i], len(ids[i]))
 	}
 
 	// 验证ID唯一性

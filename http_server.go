@@ -9,12 +9,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	sequencepkg "github.com/gostool/shortid/sequence"
 )
 
-// HTTPServer HTTP服务器，提供ID生成API
+// HTTPServer HTTP服务器，提供ID生成API。
+//
+// Deprecated: HTTP server helpers are kept for backward compatibility.
+// For new projects, prefer using shortid as a pure SDK and build transport
+// layers (HTTP/gRPC) in application code.
 type HTTPServer struct {
 	generator *Generator
+	endpoint  *Endpoint
 	server    *http.Server
 
 	// 统计信息
@@ -76,7 +81,10 @@ type IDResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// NewHTTPServer 创建HTTP服务器
+// NewHTTPServer 创建HTTP服务器。
+//
+// Deprecated: use the core SDK (`Generator`) directly and keep transport
+// implementation in your service layer.
 //
 // 参数：
 //   - addr: 服务器地址，例如 ":8080"
@@ -102,8 +110,8 @@ func NewHTTPServer(addr, redisAddr string, businessType BusinessType) (*HTTPServ
 
 	// 创建ID生成器
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
-		// SequenceProvider:  sequenceProvider,
+		MachineIDLeaseProvider: machineProvider,
+		// SequenceProvider:     sequenceProvider,
 		BusinessType: businessType,
 	})
 	if err != nil {
@@ -112,24 +120,9 @@ func NewHTTPServer(addr, redisAddr string, businessType BusinessType) (*HTTPServ
 		return nil, fmt.Errorf("failed to create generator: %w", err)
 	}
 
-	// 服务器启动时立即获取机器ID（Serverless模式）
-	if generator.useMachineProvider {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		machineID, err := machineProvider.GetMachineID(ctx)
-		cancel()
-		if err != nil {
-			machineProvider.Close()
-			return nil, fmt.Errorf("failed to get machine id on startup: %w", err)
-		}
-		generator.machineID = machineID
-		// 设置过期时间（20分钟）
-		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = machineProvider.SetMachineIDExpiration(ctx2, machineID, 20*time.Minute)
-		cancel2()
-	}
-
 	s := &HTTPServer{
 		generator: generator,
+		endpoint:  NewEndpoint(generator),
 		server: &http.Server{
 			Addr:         addr,
 			ReadTimeout:  10 * time.Second,
@@ -185,7 +178,7 @@ func (s *HTTPServer) handleNextID(w http.ResponseWriter, r *http.Request) {
 
 	// 生成ID
 	ctx := r.Context()
-	id, err := s.generator.NextID(ctx)
+	id, err := s.endpoint.NextID(ctx)
 
 	// 计算响应时间
 	responseTime := time.Since(startTime)
@@ -266,19 +259,18 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	stats := s.getStats()
 
 	// 检查Redis健康状态
-	redisHealth := "unknown"
-	if s.generator.machineIDProvider != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := s.generator.machineIDProvider.HealthCheck(ctx); err == nil {
-			redisHealth = "ok"
-		} else {
-			redisHealth = fmt.Sprintf("error: %v", err)
-		}
+	redisHealth := "ok"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.endpoint.Health(ctx); err != nil {
+		redisHealth = fmt.Sprintf("error: %v", err)
 	}
 
 	// 确定机器ID模式
 	machineIDMode := "fixed"
+	if s.generator.useMachineLeaseProvider {
+		machineIDMode = "lease"
+	}
 	if s.generator.useMachineProvider {
 		machineIDMode = "redis"
 	}
@@ -357,93 +349,11 @@ func (s *HTTPServer) getStats() ServerStats {
 }
 
 // createRedisMachineIDProviderForHTTP 创建Redis机器ID提供者（HTTP服务用）
-func createRedisMachineIDProviderForHTTP(addr string) (MachineIDProvider, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr: addr,
-	})
-
-	// 测试连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
-		return nil, err
-	}
-
-	return &redisMachineIDProviderImpl{
-		client: client,
-	}, nil
+func createRedisMachineIDProviderForHTTP(addr string) (MachineIDLeaseProvider, error) {
+	return NewRedisMachineIDLeaseProvider(addr)
 }
 
 // createRedisSequenceProviderForHTTP 创建Redis序列号提供者（HTTP服务用）
 func createRedisSequenceProviderForHTTP(addr string) (SequenceProvider, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr: addr,
-	})
-
-	// 测试连接
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
-		return nil, err
-	}
-
-	return &redisSequenceProviderImpl{
-		client: client,
-	}, nil
-}
-
-// redisMachineIDProviderImpl 实现MachineIDProvider接口
-type redisMachineIDProviderImpl struct {
-	client *redis.Client
-}
-
-func (r *redisMachineIDProviderImpl) GetMachineID(ctx context.Context) (uint16, error) {
-	result, err := r.client.Incr(ctx, "shortid:machine:id").Result()
-	if err != nil {
-		return 0, err
-	}
-	return uint16(result % 64), nil
-}
-
-func (r *redisMachineIDProviderImpl) SetMachineIDExpiration(ctx context.Context, machineID uint16, expiration time.Duration) error {
-	return r.client.Expire(ctx, "shortid:machine:id", expiration).Err()
-}
-
-func (r *redisMachineIDProviderImpl) HealthCheck(ctx context.Context) error {
-	return r.client.Ping(ctx).Err()
-}
-
-func (r *redisMachineIDProviderImpl) Close() error {
-	return r.client.Close()
-}
-
-// redisSequenceProviderImpl 实现SequenceProvider接口
-type redisSequenceProviderImpl struct {
-	client *redis.Client
-}
-
-func (r *redisSequenceProviderImpl) GetSequence(ctx context.Context, key string) (uint16, error) {
-	redisKey := "shortid:sequence:" + key
-	result, err := r.client.Incr(ctx, redisKey).Result()
-	if err != nil {
-		return 0, err
-	}
-	return uint16(result % 128), nil
-}
-
-func (r *redisSequenceProviderImpl) SetSequenceExpiration(ctx context.Context, key string, expiration time.Duration) error {
-	redisKey := "shortid:sequence:" + key
-	return r.client.Expire(ctx, redisKey, expiration).Err()
-}
-
-func (r *redisSequenceProviderImpl) HealthCheck(ctx context.Context) error {
-	return r.client.Ping(ctx).Err()
-}
-
-func (r *redisSequenceProviderImpl) Close() error {
-	return r.client.Close()
+	return sequencepkg.NewRedisSequenceProvider(addr)
 }

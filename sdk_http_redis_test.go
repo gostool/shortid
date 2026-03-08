@@ -13,10 +13,7 @@ import (
 // TestSDK_HTTPRedis_NextID 测试HTTP服务生成NextID
 // 场景：通过HTTP API生成原始数字ID（uint64）
 func TestSDK_HTTPRedis_NextID(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	// 创建HTTP服务器
 	server, err := NewHTTPServer(":0", redisAddr, BusinessOrder) // :0 表示自动分配端口
@@ -103,10 +100,7 @@ func TestSDK_HTTPRedis_NextID(t *testing.T) {
 
 // TestSDK_HTTPRedis_Health 测试健康检查端点
 func TestSDK_HTTPRedis_Health(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	server, err := NewHTTPServer(":0", redisAddr, BusinessOrder)
 	if err != nil {
@@ -133,22 +127,19 @@ func TestSDK_HTTPRedis_Health(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 
-	var result map[string]string
+	var result HealthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("Failed to decode response: %v", err)
 	}
 
-	if result["status"] != "ok" {
-		t.Errorf("Expected status 'ok', got '%s'", result["status"])
+	if result.Status != "ok" {
+		t.Errorf("Expected status 'ok', got '%s'", result.Status)
 	}
 }
 
 // TestSDK_HTTPRedis_Concurrent 测试并发HTTP请求
 func TestSDK_HTTPRedis_Concurrent(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	server, err := NewHTTPServer(":0", redisAddr, BusinessOrder)
 	if err != nil {
@@ -221,10 +212,7 @@ func TestSDK_HTTPRedis_Concurrent(t *testing.T) {
 
 // TestSDK_HTTPRedis_MethodNotAllowed 测试不支持的方法
 func TestSDK_HTTPRedis_MethodNotAllowed(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	server, err := NewHTTPServer(":0", redisAddr, BusinessOrder)
 	if err != nil {

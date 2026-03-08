@@ -214,6 +214,19 @@ func TestTimestampShortRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTimestampShort_BaselineMismatch(t *testing.T) {
+	original := int64(DefaultBaseline + 3*SecondsPerDay + 1234)
+	encoded := ToTimestampShortWithBaseline(original, DefaultBaseline)
+
+	decoded, err := FromTimestampShortWithBaseline(encoded, DefaultBaseline+SecondsPerDay)
+	if err != nil {
+		t.Fatalf("FromTimestampShortWithBaseline() error = %v", err)
+	}
+	if decoded == original {
+		t.Fatalf("decoded with mismatched baseline should differ, got same value %d", decoded)
+	}
+}
+
 // 测试负数时间戳（基准时间之前）
 // 注意：当前实现不支持负数天数，负数时间戳会使用Base62编码回退
 func TestTimestampShortNegativeDays(t *testing.T) {
@@ -392,6 +405,29 @@ func TestTimestampDynamicRoundTrip(t *testing.T) {
 				t.Errorf("RoundTrip failed: %d -> %s -> %d", ts, encoded, decoded)
 			}
 		})
+	}
+}
+
+func TestTimestampDynamic_DifferentNowAffectsDecode(t *testing.T) {
+	nowA := int64(1704067200)
+	nowB := nowA + 300
+	target := nowA + 2*UnitHour
+
+	encoded := ToTimestampDynamicWithNow(target, nowA)
+	decodedWithA, err := FromTimestampDynamic(encoded, nowA)
+	if err != nil {
+		t.Fatalf("FromTimestampDynamic() with nowA error = %v", err)
+	}
+	decodedWithB, err := FromTimestampDynamic(encoded, nowB)
+	if err != nil {
+		t.Fatalf("FromTimestampDynamic() with nowB error = %v", err)
+	}
+
+	if decodedWithA != target {
+		t.Fatalf("decodedWithA = %d, want %d", decodedWithA, target)
+	}
+	if decodedWithB == target {
+		t.Fatalf("decodedWithB should differ from target when now differs")
 	}
 }
 
@@ -681,6 +717,24 @@ func TestTimestampBoundaryValues(t *testing.T) {
 			t.Errorf("Out of range timestamp should not use compact encoding")
 		}
 	})
+}
+
+func TestTimestampCompact_OutOfRangeFallback(t *testing.T) {
+	before := time.Date(1999, 12, 31, 23, 59, 59, 0, time.UTC).Unix()
+	after := time.Date(2101, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+
+	beforeEncoded := ToTimestampCompact(before)
+	afterEncoded := ToTimestampCompact(after)
+	if len(beforeEncoded) == 7 {
+		t.Fatalf("beforeEncoded should fallback to variable length, got %q", beforeEncoded)
+	}
+	if len(afterEncoded) == 7 {
+		t.Fatalf("afterEncoded should fallback to variable length, got %q", afterEncoded)
+	}
+
+	if _, err := FromTimestampCompact(beforeEncoded); err == nil {
+		t.Fatal("FromTimestampCompact() should reject fallback non-7-char format")
+	}
 }
 
 // ============================================================================

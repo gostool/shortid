@@ -2,12 +2,13 @@ package shortid
 
 import (
 	"context"
+	"net"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/redis/go-redis/v9"
 )
+
+const requireRedisEnv = "SHORTID_REQUIRE_REDIS_TESTS"
 
 // getRedisAddr 获取Redis地址，支持环境变量配置
 func getRedisAddr() string {
@@ -18,29 +19,35 @@ func getRedisAddr() string {
 	return addr
 }
 
+func requireRedisForSDKTest(t *testing.T) string {
+	t.Helper()
+
+	redisAddr := getRedisAddr()
+	if checkRedisAvailable(redisAddr) {
+		return redisAddr
+	}
+
+	if os.Getenv(requireRedisEnv) == "1" {
+		t.Fatalf("Redis is required but unavailable at %s (env %s=1)", redisAddr, requireRedisEnv)
+	}
+	t.Skipf("Redis not available at %s, skipping test. Set %s=1 to make Redis tests mandatory.", redisAddr, requireRedisEnv)
+	return ""
+}
+
 // checkRedisAvailable 检查Redis是否可用
 // 直接创建Redis客户端来测试连接
 func checkRedisAvailable(addr string) bool {
-	client := redis.NewClient(&redis.Options{
-		Addr:         addr,
-		DialTimeout:  2 * time.Second,
-		ReadTimeout:  2 * time.Second,
-		WriteTimeout: 2 * time.Second,
-	})
-	defer client.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
 		return false
 	}
+	_ = conn.Close()
 	return true
 }
 
 // createRedisMachineIDProvider 创建Redis机器ID提供者
 // 使用http_server.go中定义的函数
-func createRedisMachineIDProvider(addr string) (MachineIDProvider, error) {
+func createRedisMachineIDProvider(addr string) (MachineIDLeaseProvider, error) {
 	return createRedisMachineIDProviderForHTTP(addr)
 }
 
@@ -59,10 +66,7 @@ func createRedisSequenceProvider(addr string) (SequenceProvider, error) {
 //  2. 运行测试: go test -v -run TestSDK_ServerlessRedis
 //  3. 或设置环境变量: REDIS_ADDR=redishost:6379 go test -v -run TestSDK_ServerlessRedis
 func TestSDK_ServerlessRedis_ShortID(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test. Set REDIS_ADDR env var to test.", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	ctx := context.Background()
 
@@ -82,10 +86,10 @@ func TestSDK_ServerlessRedis_ShortID(t *testing.T) {
 
 	// 创建ID生成器
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
-		SequenceProvider:  sequenceProvider, // 使用分布式序列号
-		BusinessType:      BusinessOrder,
-		ReturnRawID:       false, // 返回短ID
+		MachineIDLeaseProvider: machineProvider,
+		SequenceProvider:       sequenceProvider, // 使用分布式序列号
+		BusinessType:           BusinessOrder,
+		ReturnRawID:            false, // 返回短ID
 	})
 	if err != nil {
 		t.Fatalf("NewGenerator() error = %v", err)
@@ -139,10 +143,7 @@ func TestSDK_ServerlessRedis_ShortID(t *testing.T) {
 // TestSDK_ServerlessRedis_NextID 测试Serverless Redis模式生成原始数字ID
 // 场景：完整Serverless模式（机器ID + 序列号都使用Redis）
 func TestSDK_ServerlessRedis_NextID(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	ctx := context.Background()
 
@@ -159,7 +160,7 @@ func TestSDK_ServerlessRedis_NextID(t *testing.T) {
 	// defer sequenceProvider.Close()
 
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
+		MachineIDLeaseProvider: machineProvider,
 		// SequenceProvider:  sequenceProvider,
 		BusinessType: BusinessOrder,
 	})
@@ -207,10 +208,7 @@ func TestSDK_ServerlessRedis_NextID(t *testing.T) {
 // TestSDK_ServerlessRedis_Simplified 测试简化Serverless模式
 // 场景：仅机器ID使用Redis，序列号使用本地模式
 func TestSDK_ServerlessRedis_Simplified(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	ctx := context.Background()
 
@@ -222,7 +220,7 @@ func TestSDK_ServerlessRedis_Simplified(t *testing.T) {
 
 	// 不设置SequenceProvider，使用默认的本地序列号
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
+		MachineIDLeaseProvider: machineProvider,
 		// SequenceProvider 不设置，使用默认的本地序列号
 		BusinessType: BusinessOrder,
 	})
@@ -266,10 +264,7 @@ func TestSDK_ServerlessRedis_Simplified(t *testing.T) {
 
 // TestSDK_ServerlessRedis_Concurrent 测试并发场景
 func TestSDK_ServerlessRedis_Concurrent(t *testing.T) {
-	redisAddr := getRedisAddr()
-	if !checkRedisAvailable(redisAddr) {
-		t.Skipf("Redis not available at %s, skipping test", redisAddr)
-	}
+	redisAddr := requireRedisForSDKTest(t)
 
 	ctx := context.Background()
 
@@ -286,9 +281,9 @@ func TestSDK_ServerlessRedis_Concurrent(t *testing.T) {
 	defer sequenceProvider.Close()
 
 	generator, err := NewGenerator(Config{
-		MachineIDProvider: machineProvider,
-		SequenceProvider:  sequenceProvider,
-		BusinessType:      BusinessOrder,
+		MachineIDLeaseProvider: machineProvider,
+		SequenceProvider:       sequenceProvider,
+		BusinessType:           BusinessOrder,
 	})
 	if err != nil {
 		t.Fatalf("NewGenerator() error = %v", err)

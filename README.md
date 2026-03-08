@@ -1,343 +1,132 @@
-# ShortID - 分布式唯一ID生成器
+# shortid
 
-[![Go Version](https://img.shields.io/badge/go-1.22+-blue.svg)](https://golang.org)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+`shortid` 是一个面向生产的 Go ID 生成 SDK。  
+它兼容雪花算法思路，但把“机器ID分配”升级为**租约模型**，更适合云原生弹性场景。
 
-一个高性能的分布式唯一ID生成器，基于 Sonyflake 算法实现，支持 Serverless 部署和短ID生成。
+## 1. 为什么从传统雪花迁移
 
-## ✨ 特性
+传统雪花的核心风险是 `machine_id` 管理：固定配置或人工分配在容器/Serverless下容易冲突。
 
-- 🚀 **高性能**: QPS 达到 11,479（100并发），平均响应时间 8.7ms
-- 🔒 **分布式**: 支持 Serverless 模式，动态分配机器ID
-- 📦 **短ID**: Base62 编码，生成 8-12 字符的短ID
-- 🌐 **HTTP API**: 提供 RESTful API，支持健康检查和统计信息
-- 🔧 **灵活配置**: 支持固定机器ID、Redis分布式、本地序列号等多种模式
-- 📊 **监控**: 内置性能统计和健康检查
+`shortid` 的迁移目标：
 
-## 📦 安装
+- 保留雪花的核心优点：`uint64`、高吞吐、按时间趋势递增。
+- 将机器号管理升级为租约（可接 Redis / etcd / 第三方）。
+- 业务接入保持简单：本地单机和分布式都走统一 API。
 
-### 私有仓库配置
+## 2. 雪花迁移对照（直观版）
 
-由于这是私有仓库，需要先配置环境：
+| 雪花概念 | shortid 对应 | 迁移方式 |
+|---|---|---|
+| 固定 `machine_id` | `New(machineID, businessType)` | 单机/固定节点可直接迁 |
+| 机器号中心分配 | `MachineIDLeaseProvider` | 推荐，替代人工机器号 |
+| 序列号 | 本地序列或 `SequenceProvider` | 默认本地，强一致再上远端 |
+| 生成 `int64` | `NextID(ctx) -> uint64` | 大多数场景直接替换 |
+
+最短迁移示例：
+
+```go
+g, err := shortid.New(1, shortid.BusinessOrder)
+if err != nil {
+    panic(err)
+}
+id, err := g.NextID(context.Background())
+```
+
+## 3. 架构理念（可扩展，不绑框架）
+
+```mermaid
+flowchart LR
+    A["业务代码<br/>(HTTP/gRPC/MQ/Job)"] --> B["Endpoint（可选）"]
+    A --> C["Generator（核心发号）"]
+    B --> C
+    C --> D["MachineIDLeaseProvider<br/>(Redis/etcd/第三方)"]
+    C --> E["SequenceProvider（可选）"]
+    D --> F["Lease Store"]
+    E --> G["Sequence Store"]
+```
+
+设计原则：
+
+- 核心发号与传输层解耦（HTTP/gRPC/MQ 共享一套发号逻辑）。
+- 机器ID通过租约保证“持有者身份”和“自动过期”。
+- 适配层可插拔：Redis/etcd/第三方都可实现接口接入。
+
+## 4. 机器ID租约安全模型（分布式锁同级）
+
+`MachineIDLeaseProvider` 要求：
+
+- `Acquire`：原子抢占机器ID租约。
+- `Renew`：必须 token CAS（只有持有者能续租）。
+- `Release`：必须 token CAS（只有持有者能释放）。
+- 失租后必须停止发号（返回错误）。
+
+详细设计见 [docs/MACHINE_ID_LEASE.md](docs/MACHINE_ID_LEASE.md)。
+
+## 5. 性能扩展怎么做
+
+### 5.1 当前默认扩展路径
+
+1. 单实例：固定 `MachineID`，本地序列（最低延迟）。
+2. 弹性实例：`MachineIDLeaseProvider` + 本地序列（推荐）。
+3. 跨实例强一致序列：再接 `SequenceProvider`（吞吐换一致性）。
+
+### 5.2 Redis 租约实现优化点
+
+- `Acquire` 使用 **单次 Lua** 在 Redis 侧完成“游标推进 + 槽位抢占”。
+- `Renew/Release` 使用 token CAS，保证安全。
+- `Slots` 可配置（默认64），便于按业务规模调优。
+
+## 6. 本地实测（Redis租约模式）
+
+测试命令：
 
 ```bash
-# 设置 GOPRIVATE
-export GOPRIVATE=github.com/gostool
-
-# 配置 Git SSH（推荐）
-git config --global url."git@github.com:".insteadOf "https://github.com/"
-
-# 永久设置（添加到 ~/.zshrc）
-echo 'export GOPRIVATE=github.com/gostool' >> ~/.zshrc
-source ~/.zshrc
+go test -run 'TestPerf_RedisLeaseMode_(SingleInstance|TwoInstances|MultiInstances)$' -v ./...
 ```
 
-### 获取包
+测试环境（真实本机实测）：
+
+- 时间：2026-03-08 21:13 CST
+- 机器：MacBook Pro (MacBookPro18,3)
+- CPU：Apple M1 Pro，8 Core (6P + 2E)
+- 内存：16 GB
+- 系统：macOS 15.6 (Darwin 24.6.0, arm64)
+- Redis：本地 Docker 单实例（`localhost:6379`）
+- 模式：`MachineIDLeaseProvider`（Lua Acquire）+ 本地序列号
+
+| 场景 | 请求量 | 总耗时 | 平均耗时 | QPS |
+|---|---:|---:|---:|---:|
+| 单实例（1个Generator） | 50,000 | 4.274s | 85.472µs | 11,700 |
+| 双实例（2个Generator并发） | 60,000 | 2.576s | 42.935µs | 23,291 |
+| 16实例并发 | 80,000 | 0.456s | 5.705µs | 175,277 |
+| 32实例并发 | 96,000 | 0.261s | 2.713µs | 368,488 |
+| 64实例并发 | 96,000 | 0.124s | 1.291µs | 774,330 |
+
+说明：
+- 上述数据来自当前机器实测日志（`go test -v` 输出），非理论估算。
+- 16/32/64 场景主要反映“并行扩展能力”，不等同于线上端到端吞吐。
+- 线上请按目标实例规格、网络与Redis拓扑复测。
+
+## 7. 快速开始
+
+安装：
 
 ```bash
-go get github.com/gostool/shortid@v1.0.0
-
-# 或获取最新版本
-go get -u github.com/gostool/shortid@latest
+go get github.com/gostool/shortid
 ```
 
-详细配置说明请参考 [私有包配置指南](docs/PRIVATE_SETUP.md)。
-
-## 🚀 快速开始
-
-### 1. 单机模式（固定机器ID）
-
-```go
-package main
-
-import (
-    "fmt"
-    "github.com/gostool/shortid"
-)
-
-func main() {
-    // 创建生成器
-    generator, err := shortid.NewGenerator(shortid.Config{
-        MachineID:    1,                    // 固定机器ID
-        BusinessType: shortid.BusinessOrder, // 业务类型
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    // 生成短ID
-    id, err := generator.Generate()
-    if err != nil {
-        panic(err)
-    }
-    
-    fmt.Println("Short ID:", id) // 输出: Short ID: Pby0X2Cy19
-}
-```
-
-### 2. Serverless 模式（Redis）
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "github.com/gostool/shortid"
-)
-
-func main() {
-    // 创建 Redis 机器ID提供者
-    machineProvider, err := shortid.NewRedisMachineIDProvider("localhost:6379")
-    if err != nil {
-        panic(err)
-    }
-    defer machineProvider.Close()
-
-    // 创建生成器
-    generator, err := shortid.NewGenerator(shortid.Config{
-        MachineIDProvider: machineProvider,
-        BusinessType:      shortid.BusinessOrder,
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    // 生成ID
-    ctx := context.Background()
-    id, err := generator.GenerateWithContext(ctx)
-    if err != nil {
-        panic(err)
-    }
-    
-    fmt.Println("ID:", id)
-}
-```
-
-### 3. HTTP 服务
-
-```go
-package main
-
-import (
-    "log"
-    "github.com/gostool/shortid"
-)
-
-func main() {
-    // 创建 HTTP 服务器
-    server, err := shortid.NewHTTPServer(
-        ":8080",                    // 监听地址
-        "localhost:6379",           // Redis 地址
-        shortid.BusinessOrder,      // 业务类型
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // 启动服务器
-    log.Println("Server starting on :8080")
-    if err := server.Start(); err != nil {
-        log.Fatal(err)
-    }
-}
-```
-
-启动后访问：
-- `GET /nextid` - 生成ID
-- `GET /health` - 健康检查和统计信息
-
-## 📖 API 文档
-
-### Generator
-
-#### NewGenerator
-
-创建ID生成器。
-
-```go
-func NewGenerator(config Config) (*Generator, error)
-```
-
-**配置选项**：
-- `MachineID`: 固定机器ID（0-63）
-- `MachineIDProvider`: 机器ID提供者（Serverless模式）
-- `SequenceProvider`: 序列号提供者（分布式序列号）
-- `BusinessType`: 业务类型
-- `ReturnRawID`: 是否返回原始数字ID（默认false，返回短ID）
-
-#### Generate / GenerateWithContext
-
-生成ID。
-
-```go
-func (g *Generator) Generate() (string, error)
-func (g *Generator) GenerateWithContext(ctx context.Context) (string, error)
-```
-
-#### NextID
-
-生成原始数字ID（uint64）。
-
-```go
-func (g *Generator) NextID(ctx context.Context) (uint64, error)
-```
-
-### HTTP Server
-
-#### NewHTTPServer
-
-创建HTTP服务器。
-
-```go
-func NewHTTPServer(addr, redisAddr string, businessType BusinessType) (*HTTPServer, error)
-```
-
-#### 端点
-
-- `GET /nextid` - 生成ID，返回 JSON: `{"id": 1234567890}`
-- `GET /health` - 健康检查，返回统计信息
-
-## 🎯 使用场景
-
-### 场景1: 分布式唯一ID（Serverless部署）
-
-适合 Serverless、容器化等动态部署场景：
-
-```go
-// 使用 Redis 管理机器ID和序列号
-machineProvider := shortid.NewRedisMachineIDProvider("redis:6379")
-sequenceProvider := shortid.NewRedisSequenceProvider("redis:6379")
-
-generator, _ := shortid.NewGenerator(shortid.Config{
-    MachineIDProvider: machineProvider,
-    SequenceProvider:  sequenceProvider,
-    BusinessType:      shortid.BusinessOrder,
-})
-```
-
-### 场景2: 生成短ID
-
-适合需要短ID的场景（如短链接、邀请码等）：
-
-```go
-generator, _ := shortid.NewGenerator(shortid.Config{
-    MachineID:    1,
-    BusinessType: shortid.BusinessOrder,
-})
-
-id, _ := generator.Generate() // 返回: "Pby0X2Cy19" (10字符)
-```
-
-## 📊 性能指标
-
-根据性能测试报告（[PERFORMANCE_TEST.md](docs/PERFORMANCE_TEST.md)）：
-
-| 指标 | 值 |
-|------|-----|
-| **QPS** | 11,479（100并发） |
-| **平均响应时间** | 8.7ms |
-| **99%响应时间** | 15ms |
-| **成功率** | 100% |
-
-测试环境：
-- 机器ID: Redis（分布式）
-- 序列号: 本地内存
-- 并发: 100
-- 请求数: 10,000
-
-## 📁 项目结构
-
-```
-shortid/
-├── provider.go              # 接口定义
-├── generator.go              # 核心实现
-├── http_server.go           # HTTP服务器
-├── machineid/               # 机器ID提供者
-│   ├── memory.go           # 内存实现
-│   └── redis.go            # Redis实现
-├── sequence/                # 序列号提供者
-│   ├── memory.go           # 内存实现
-│   └── redis.go            # Redis实现
-└── docs/                    # 文档
-    ├── FILE_STRUCTURE.md    # 文件结构
-    ├── PERFORMANCE_TEST.md  # 性能测试
-    └── PRIVATE_SETUP.md     # 私有包配置
-```
-
-详细结构请参考 [文件结构文档](docs/FILE_STRUCTURE.md)。
-
-## 🔧 配置说明
-
-### 业务类型
-
-```go
-const (
-    BusinessOrder    BusinessType = 3  // 订单
-    BusinessPayment  BusinessType = 4  // 支付
-    BusinessUser     BusinessType = 5  // 用户
-    // ... 更多业务类型
-)
-```
-
-### 机器ID模式
-
-- **固定模式**: 使用 `MachineID` 字段，适合传统部署
-- **Serverless模式**: 使用 `MachineIDProvider`，适合动态部署
-
-### 序列号模式
-
-- **本地模式**: 不设置 `SequenceProvider`，序列号在本地内存中维护
-- **分布式模式**: 设置 `SequenceProvider`，序列号在 Redis 中管理
-
-## 📚 文档
-
-- [文件结构](docs/FILE_STRUCTURE.md) - 项目文件结构说明
-- [性能测试报告](docs/PERFORMANCE_TEST.md) - 详细的性能测试结果
-- [私有包配置指南](docs/PRIVATE_SETUP.md) - 私有仓库访问配置
-- [版本测试指南](docs/VERSION_TEST.md) - 版本验证方法
-
-## 🧪 测试
+基础验证：
 
 ```bash
-# 运行所有测试
 go test ./...
-
-# 运行特定测试
-go test -v -run TestSDK_SingleMemory
-
-# 运行 HTTP 服务测试（需要 Redis）
-go test -v -run TestSDK_HTTPRedis
+SHORTID_REQUIRE_REDIS_TESTS=1 go test ./...
+go test -race ./...
 ```
 
-## 📝 版本历史
+## 8. 相关文档
 
-- **v1.0.0** (2024-12-17)
-  - 完整的分布式唯一ID生成器实现
-  - HTTP服务器和健康检查
-  - 完善的文档和测试
-
-- **v0.4.0** (2024-12-17)
-  - 添加HTTP服务器实现
-  - 添加健康检查端点
-  - 修复文档文件名问题
-
-查看所有版本: `git tag -l`
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📄 许可证
-
-[MIT License](LICENSE)
-
-## 🔗 相关链接
-
-- [Go Modules 文档](https://go.dev/ref/mod)
-- [Sonyflake 算法](https://github.com/sony/sonyflake)
-
----
-
-**注意**: 这是私有仓库，使用前请配置 GOPRIVATE 环境变量。详见 [私有包配置指南](docs/PRIVATE_SETUP.md)。
-
+- [docs/INTEGRATION_QUICKSTART.md](docs/INTEGRATION_QUICKSTART.md)
+- [docs/API_CONTRACT.md](docs/API_CONTRACT.md)
+- [docs/UPGRADING.md](docs/UPGRADING.md)
+- [docs/RELEASE_POLICY.md](docs/RELEASE_POLICY.md)
+- [docs/MACHINE_ID_LEASE.md](docs/MACHINE_ID_LEASE.md)
