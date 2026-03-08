@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2024-2025 Go Tool Team
+Copyright (c) 2024-2026 Huo Yinghui
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,54 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-## 算法保护声明
-
-本软件包含以下原创算法和实现：
-
-1. **Base62/Base91 编码算法**：优化的数字到字符串转换算法
-2. **时间戳压缩算法**：包括短编码、动态编码、紧凑编码等多种策略
-3. **日期编码算法**：相对基准日期的高效编码方案
-4. **ID生成算法**：结合业务类型、时间戳、机器ID和序列号的分布式ID生成策略
-
-### 算法保护条款
-
-1. **原创性声明**：本软件中的算法实现均为原创，受版权法保护。
-
-2. **使用限制**：
-   - 允许自由使用、修改和分发本软件
-   - 禁止将本软件的算法核心部分作为专利或商业机密进行申请
-   - 禁止在未授权的情况下将本软件的算法用于商业闭源产品
-
-3. **归属要求**：
-   - 使用本软件时，应保留原始版权声明
-   - 基于本软件修改或衍生的作品，应明确标注来源
-   - 在文档、代码注释或产品说明中应提及本项目的贡献
-
-4. **算法研究**：
-   - 允许出于学习和研究目的分析、理解算法实现
-   - 鼓励基于本算法进行创新和改进
-   - 改进后的算法如公开发布，建议回馈社区
-
-5. **商业使用**：
-   - 允许商业使用，包括在商业产品中集成本软件
-   - 商业使用建议但不强制要求贡献代码或资金
-   - 大规模商业使用建议联系作者获取技术支持
-
-### 免责声明
-
-本软件按"原样"提供，不提供任何明示或暗示的担保。作者不对使用本软件造成的任何直接或间接损失承担责任。
-
-### 联系方式
-
-如有关于算法使用、授权或合作的疑问，请通过以下方式联系：
-
-- GitHub Issues: https://github.com/gostool/shortid/issues
-- GitHub Discussions: https://github.com/gostool/shortid/discussions
-
----
-
-**注意**：本许可证在标准 MIT 许可证基础上增加了算法保护条款。这些条款旨在保护算法的原创性，同时保持开源软件的友好性。如有疑问，请与项目维护者联系。
-

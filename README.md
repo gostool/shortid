@@ -163,3 +163,9 @@ go test -race ./...
 - [docs/UPGRADING.md](docs/UPGRADING.md)
 - [docs/RELEASE_POLICY.md](docs/RELEASE_POLICY.md)
 - [docs/MACHINE_ID_LEASE.md](docs/MACHINE_ID_LEASE.md)
+
+## 10. 版权与许可
+
+- 本项目采用 [MIT License](LICENSE)。
+- 版权归属：`Copyright (c) 2024-2026 Huo Yinghui`
+- 使用、修改、分发和商用均允许；但分发时必须保留版权声明与许可文本。
